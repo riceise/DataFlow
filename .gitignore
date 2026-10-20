@@ -1,0 +1,83 @@
+# Local OpenCode configuration and private project plan
+/opencode.json
+/.opencode/
+/DataFlow-Architecture.md
+/plan.md
+/docs/
+TODO.md
+NOTES.md
+scratch.*
+*.private.*
+
+# .NET build output
+**/[Bb]in/
+**/[Oo]bj/
+/artifacts/
+
+# IDE user settings
+.idea/
+.vs/
+*.user
+*.suo
+*.DotSettings.user
+
+# Frontend dependencies and build output
+**/node_modules/
+**/dist/
+**/.vite/
+*.tsbuildinfo
+
+# Test results and coverage
+**/TestResults/
+**/coverage/
+*.coverage
+*.coveragexml
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+!.env.*.example
+**/appsettings.Local.json
+**/appsettings.*.Local.json
+**/appsettings.Development.json
+**/appsettings.Production.json
+**/appsettings.Staging.json
+**/secrets.json
+**/http-client.private.env.json
+**/*.http.env.json
+*.pfx
+*.p12
+*.key
+*.pem
+
+# Logs and local infrastructure data
+**/logs/
+*.log
+*.bak
+*.dump
+*.sql
+/*.csv
+/*.xlsx
+/*.xls
+/*.xml
+/postgres-data/
+/pgdata/
+/rabbitmq-data/
+/minio-data/
+/uploads/
+/reports/
+/backups/
+/local-data/
+/tmp/
+/temp/
+/.tmp/
+
+# Temporary and OS files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+Thumbs.db
+.DS_Store

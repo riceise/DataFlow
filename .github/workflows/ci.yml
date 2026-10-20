@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore dependencies
+        run: dotnet restore DataFlow.sln
+
+      - name: Verify code formatting
+        run: dotnet format DataFlow.sln --verify-no-changes --no-restore
+
+      - name: Build solution
+        run: dotnet build DataFlow.sln --no-restore --configuration Release
+
+      - name: Run tests
+        run: dotnet test DataFlow.sln --no-build --configuration Release --verbosity normal

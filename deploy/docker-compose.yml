@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: dataflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dataflow}
+      POSTGRES_USER: ${POSTGRES_USER:-dataflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dataflow_dev_password}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - dataflow_postgres_data:/var/lib/postgresql
+    networks:
+      - dataflow_internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-dataflow} -d $${POSTGRES_DB:-dataflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  rabbitmq:
+    image: rabbitmq:4.0.5-management-alpine
+    container_name: dataflow-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-dataflow}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-dataflow_dev_password}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_DEFAULT_VHOST:-/}
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - dataflow_rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - dataflow_internal
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  minio:
+    image: minio/minio:RELEASE.2025-02-07T23-21-09Z
+    container_name: dataflow-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dataflow_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dataflow_minio_password}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - dataflow_minio_data:/data
+    networks:
+      - dataflow_internal
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  dataflow_postgres_data:
+  dataflow_rabbitmq_data:
+  dataflow_minio_data:
+
+networks:
+  dataflow_internal:
+    driver: bridge
