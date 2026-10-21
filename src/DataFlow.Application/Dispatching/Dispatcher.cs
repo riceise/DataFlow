@@ -4,27 +4,6 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace DataFlow.Application.Dispatching;
 
-public interface IRequest<TResponse>;
-public interface ICommand<TResponse> : IRequest<TResponse>;
-public interface IQuery<TResponse> : IRequest<TResponse>;
-
-public interface IRequestHandler<in TRequest, TResponse> where TRequest : IRequest<TResponse>
-{
-    Task<TResponse> HandleAsync(TRequest request, CancellationToken cancellationToken);
-}
-
-public interface ICommandHandler<in TCommand, TResponse> : IRequestHandler<TCommand, TResponse>
-    where TCommand : ICommand<TResponse>;
-
-public interface IQueryHandler<in TQuery, TResponse> : IRequestHandler<TQuery, TResponse>
-    where TQuery : IQuery<TResponse>;
-
-public interface IDispatcher
-{
-    Task<TResponse> DispatchAsync<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken = default)
-        where TRequest : IRequest<TResponse>;
-}
-
 internal sealed class Dispatcher(IServiceProvider services) : IDispatcher
 {
     public async Task<TResponse> DispatchAsync<TRequest, TResponse>(
