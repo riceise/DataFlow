@@ -90,7 +90,7 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
         var savedCustomer = await read.Customers.SingleAsync(entity => entity.Id == customer.Id);
         Assert.Equal(2, savedSource.SchemaVersion);
         Assert.Equal(1, savedJob.SchemaVersion);
-        Assert.Equal(DataSourceSchema.FromJson(originalSchema).ToJson(), DataSourceSchema.FromJson(savedJob.SchemaJson).ToJson());
+        Assert.Equal(DataSourceSchema.FromJson(originalSchema), DataSourceSchema.FromJson(savedJob.SchemaJson));
         Assert.Equal(ImportJobStatus.CompletedWithErrors, savedJob.Status);
         Assert.Equal(1, savedJob.ProcessedRows);
         Assert.Equal("invalid_email", Assert.Single(savedRow.GetErrors()).Code);

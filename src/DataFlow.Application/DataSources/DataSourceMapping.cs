@@ -16,7 +16,7 @@ internal static class DataSourceMapping
             .OrderBy(field => Array.IndexOf(SaveDataSourceRequestValidator.FieldOrder, field!.Name))
             .Select(field => new DataSourceFieldDefinition(field!.Name!, field.Type!, field.Required!.Value, field.MaxLength, field.Format))
             .ToArray();
-        return new DataSourceSchema(1, ["externalId"], fields, schema.CsvDelimiter!);
+        return new DataSourceSchema(1, [SaveDataSourceRequestValidator.RequiredKeyField], fields, schema.CsvDelimiter!);
     }
 
     public static DataSourceDto ToDto(this DataSource source)

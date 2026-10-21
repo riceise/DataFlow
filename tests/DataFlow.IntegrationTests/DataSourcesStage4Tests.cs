@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using DataFlow.Application.DataSources;
 using DataFlow.Application.Dispatching;
 using DataFlow.Domain.Entities;
@@ -323,6 +324,35 @@ public sealed class DataSourcesStage4Tests(DataSourcesApiFixture fixture) : ICla
     }
 
     [Fact]
+    public async Task Update_WithVersionDriftInStorage_RestoresSchemaVersionConsistency()
+    {
+        var request = ValidRequest();
+        var source = await CreateSource(request);
+
+        await using (var database = fixture.CreateContext())
+        {
+            var saved = await database.DataSources.AsNoTracking().SingleAsync(entity => entity.Id == source.Id);
+            var drifted = JsonNode.Parse(saved.SchemaJson)!;
+            drifted["version"] = 99;
+            await database.DataSources
+                .Where(entity => entity.Id == source.Id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(entity => entity.SchemaJson, drifted.ToJsonString()));
+        }
+
+        using var response = await _client.PutAsJsonAsync($"{Sources}/{source.Id}", request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var updated = await ReadSource(response);
+        Assert.Equal(1, updated.SchemaVersion);
+        Assert.Equal(1, updated.Schema.Version);
+
+        await using var read = fixture.CreateContext();
+        var persisted = await read.DataSources.AsNoTracking().SingleAsync(entity => entity.Id == source.Id);
+        Assert.Equal(1, persisted.SchemaVersion);
+        using var stored = JsonDocument.Parse(persisted.SchemaJson);
+        Assert.Equal(1, stored.RootElement.GetProperty("version").GetInt32());
+    }
+
+    [Fact]
     public async Task OptionalRegisteredAtAndDefaultDelimiter_AreSupported()
     {
         var request = ValidRequest();
@@ -351,7 +381,9 @@ public sealed class DataSourcesStage4Tests(DataSourcesApiFixture fixture) : ICla
         Assert.True(paths.GetProperty($"{Sources}/{{id}}").TryGetProperty("put", out _));
         using var ui = await _client.GetAsync("/scalar/v1");
         Assert.Equal(HttpStatusCode.OK, ui.StatusCode);
-        Assert.Contains("api-reference", await ui.Content.ReadAsStringAsync());
+        var html = await ui.Content.ReadAsStringAsync();
+        Assert.Contains("scalar.aspnetcore.js", html);
+        Assert.Contains("openapi/v1.json", html);
     }
 
     [Theory]

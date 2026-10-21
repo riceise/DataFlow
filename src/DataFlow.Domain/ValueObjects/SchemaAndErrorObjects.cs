@@ -104,6 +104,11 @@ public sealed record DataSourceSchema
         var fieldNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var field in fields)
         {
+            if (field is null)
+            {
+                throw new DomainException("invalid_schema_field", "Schema field definition cannot be null.");
+            }
+
             if (!fieldNames.Add(field.Name))
             {
                 throw new DomainException("duplicate_schema_field", $"Duplicate field '{field.Name}' in schema.");
@@ -145,7 +150,7 @@ public sealed record DataSourceSchema
     }
 
     [JsonPropertyName("version")]
-    public int Version { get; init; }
+    public int Version { get; }
 
     [JsonPropertyName("keyFields")]
     public IReadOnlyList<string> KeyFields { get; }
@@ -157,6 +162,16 @@ public sealed record DataSourceSchema
     public string CsvDelimiter { get; }
 
     public string ToJson() => JsonSerializer.Serialize(this, SerializerOptions);
+
+    public DataSourceSchema WithVersion(int version)
+    {
+        if (version <= 0)
+        {
+            throw new DomainException("invalid_schema_version", "Schema version must be greater than zero.");
+        }
+
+        return new DataSourceSchema(version, KeyFields, Fields, CsvDelimiter);
+    }
 
     public static DataSourceSchema FromJson(string json)
     {
@@ -174,6 +189,43 @@ public sealed record DataSourceSchema
         {
             throw new DomainException("invalid_schema_json", $"Invalid schema JSON format: {ex.Message}");
         }
+    }
+
+    public bool Equals(DataSourceSchema? other)
+    {
+        if (ReferenceEquals(this, other))
+        {
+            return true;
+        }
+
+        if (other is null)
+        {
+            return false;
+        }
+
+        return Version == other.Version
+            && CsvDelimiter == other.CsvDelimiter
+            && KeyFields.SequenceEqual(other.KeyFields, StringComparer.Ordinal)
+            && Fields.SequenceEqual(other.Fields);
+    }
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Version);
+        hash.Add(CsvDelimiter, StringComparer.Ordinal);
+
+        foreach (var keyField in KeyFields)
+        {
+            hash.Add(keyField, StringComparer.Ordinal);
+        }
+
+        foreach (var field in Fields)
+        {
+            hash.Add(field);
+        }
+
+        return hash.ToHashCode();
     }
 }
 

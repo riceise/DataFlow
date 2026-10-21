@@ -1,5 +1,6 @@
 using DataFlow.Domain.Enums;
 using DataFlow.Domain.Exceptions;
+using DataFlow.Domain.Time;
 using DataFlow.Domain.ValueObjects;
 
 namespace DataFlow.Domain.Entities;
@@ -62,13 +63,9 @@ public sealed class DataSource
 
         ArgumentNullException.ThrowIfNull(schema);
 
-        var normalizedSchema = new DataSourceSchema(
-            version: 1,
-            keyFields: schema.KeyFields,
-            fields: schema.Fields,
-            csvDelimiter: schema.CsvDelimiter);
+        var normalizedSchema = schema.WithVersion(1);
 
-        var utcNow = nowUtc.ToUniversalTime();
+        var utcNow = PersistenceTime.ToStoragePrecision(nowUtc);
 
         return new DataSource(
             Guid.NewGuid(),
@@ -102,29 +99,29 @@ public sealed class DataSource
         Name = name.Trim();
         AcceptedFormats = acceptedFormats;
 
-        var currentCanonical = DataSourceSchema.FromJson(SchemaJson) with { Version = 1 };
-        var candidateCanonical = newSchema with { Version = 1 };
+        var currentCanonical = DataSourceSchema.FromJson(SchemaJson).WithVersion(1);
+        var candidateCanonical = newSchema.WithVersion(1);
 
-        if (currentCanonical.ToJson() != candidateCanonical.ToJson())
+        if (currentCanonical != candidateCanonical)
         {
             SchemaVersion += 1;
-            var updatedSchema = newSchema with { Version = SchemaVersion };
-            SchemaJson = updatedSchema.ToJson();
         }
 
-        UpdatedAt = nowUtc.ToUniversalTime();
+        SchemaJson = newSchema.WithVersion(SchemaVersion).ToJson();
+
+        UpdatedAt = PersistenceTime.ToStoragePrecision(nowUtc);
     }
 
     public void Activate(DateTimeOffset nowUtc)
     {
         IsActive = true;
-        UpdatedAt = nowUtc.ToUniversalTime();
+        UpdatedAt = PersistenceTime.ToStoragePrecision(nowUtc);
     }
 
     public void Deactivate(DateTimeOffset nowUtc)
     {
         IsActive = false;
-        UpdatedAt = nowUtc.ToUniversalTime();
+        UpdatedAt = PersistenceTime.ToStoragePrecision(nowUtc);
     }
 
     public DataSourceSchema GetParsedSchema() => DataSourceSchema.FromJson(SchemaJson);

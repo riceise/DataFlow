@@ -5,7 +5,8 @@ namespace DataFlow.Application.DataSources;
 
 public sealed class SaveDataSourceRequestValidator : AbstractValidator<SaveDataSourceRequest>
 {
-    internal static readonly string[] FieldOrder = ["externalId", "name", "email", "registeredAt", "isActive"];
+    internal const string RequiredKeyField = "externalId";
+    internal static readonly string[] FieldOrder = [RequiredKeyField, "name", "email", "registeredAt", "isActive"];
 
     public SaveDataSourceRequestValidator()
     {
@@ -31,9 +32,9 @@ public sealed class SaveDataSourceRequestValidator : AbstractValidator<SaveDataS
             return;
         }
 
-        if (schema.KeyFields is not { Count: 1 } || schema.KeyFields[0] != "externalId")
+        if (schema.KeyFields is not { Count: 1 } || schema.KeyFields[0] != RequiredKeyField)
         {
-            Error("schema.keyFields", "Key fields must be exactly [\"externalId\"].");
+            Error("schema.keyFields", $"Key fields must be exactly [\"{RequiredKeyField}\"].");
         }
 
         if (schema.CsvDelimiter is not { Length: 1 })
@@ -86,7 +87,7 @@ public sealed class SaveDataSourceRequestValidator : AbstractValidator<SaveDataS
                 Error($"{path}.required", "Required must match the Customer field definition.");
             }
 
-            var maximum = field.Name switch { "externalId" => 80, "name" => 200, "email" => 254, _ => 0 };
+            var maximum = field.Name switch { RequiredKeyField => 80, "name" => 200, "email" => 254, _ => 0 };
             if (maximum > 0 && (field.MaxLength is null || field.MaxLength < 1 || field.MaxLength > maximum))
             {
                 Error($"{path}.maxLength", $"Max length must be between 1 and {maximum}.");
