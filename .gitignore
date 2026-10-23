@@ -71,6 +71,7 @@ scratch.*
 /local-data/
 /tmp/
 /temp/
+**/temp/uploads/
 /.tmp/
 
 # Temporary and OS files
