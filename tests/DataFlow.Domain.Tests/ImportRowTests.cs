@@ -1,5 +1,6 @@
 using DataFlow.Domain.Entities;
 using DataFlow.Domain.Enums;
+using DataFlow.Domain.Exceptions;
 using DataFlow.Domain.ValueObjects;
 
 namespace DataFlow.Domain.Tests;
@@ -23,8 +24,10 @@ public sealed class ImportRowTests
     {
         var jobId = Guid.NewGuid();
         var errors = new[] { new ImportRowError("email", "invalid_email", "Invalid email") };
-        Assert.Throws<ArgumentException>(() => ImportRow.Create(jobId, 2, ImportRowStatus.Invalid, null, null, errors, DateTimeOffset.UtcNow));
-        Assert.Throws<ArgumentException>(() => ImportRow.Create(jobId, 2, ImportRowStatus.Invalid, "{}", null, null, DateTimeOffset.UtcNow));
+        Assert.Equal("invalid_import_row_errors", Assert.Throws<DomainException>(() =>
+            ImportRow.Create(jobId, 2, ImportRowStatus.Invalid, null, null, errors, DateTimeOffset.UtcNow)).Code);
+        Assert.Equal("invalid_import_row_errors", Assert.Throws<DomainException>(() =>
+            ImportRow.Create(jobId, 2, ImportRowStatus.Invalid, "{}", null, null, DateTimeOffset.UtcNow)).Code);
         var row = ImportRow.Create(jobId, 2, ImportRowStatus.Invalid, "{}", null, errors, DateTimeOffset.UtcNow);
         Assert.Equal(errors, row.GetErrors());
     }
@@ -35,7 +38,7 @@ public sealed class ImportRowTests
     [InlineData(2, (ImportRowStatus)99)]
     public void Row_RejectsInvalidNumberAndStatus(int number, ImportRowStatus status)
     {
-        Assert.Throws<ArgumentException>(() =>
-            ImportRow.Create(Guid.NewGuid(), number, status, null, null, null, DateTimeOffset.UtcNow));
+        Assert.Equal("invalid_import_row", Assert.Throws<DomainException>(() =>
+            ImportRow.Create(Guid.NewGuid(), number, status, null, null, null, DateTimeOffset.UtcNow)).Code);
     }
 }

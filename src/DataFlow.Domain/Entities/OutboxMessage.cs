@@ -1,3 +1,5 @@
+using DataFlow.Domain.Exceptions;
+
 namespace DataFlow.Domain.Entities;
 
 public sealed class OutboxMessage
@@ -29,12 +31,12 @@ public sealed class OutboxMessage
     {
         if (string.IsNullOrWhiteSpace(type))
         {
-            throw new ArgumentException("Outbox message type is required.", nameof(type));
+            throw new DomainException("invalid_outbox_type", "Outbox message type is required.");
         }
 
         if (string.IsNullOrWhiteSpace(payload))
         {
-            throw new ArgumentException("Outbox message payload is required.", nameof(payload));
+            throw new DomainException("invalid_outbox_payload", "Outbox message payload is required.");
         }
 
         return new OutboxMessage(type.Trim(), payload, nowUtc);
@@ -54,7 +56,7 @@ public sealed class OutboxMessage
     {
         if (string.IsNullOrWhiteSpace(error))
         {
-            throw new ArgumentException("Outbox failure error is required.", nameof(error));
+            throw new DomainException("invalid_outbox_error", "Outbox failure error is required.");
         }
 
         Attempts += 1;

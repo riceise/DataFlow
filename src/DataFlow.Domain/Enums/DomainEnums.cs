@@ -11,6 +11,8 @@ public enum AcceptedFileFormat
     None = 0,
     Csv = 1,
     Xlsx = 2,
+    Pdf = 4,
+    Zip = 8,
     All = Csv | Xlsx
 }
 

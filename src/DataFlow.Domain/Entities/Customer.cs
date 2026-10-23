@@ -1,5 +1,4 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using DataFlow.Domain.Exceptions;
 
 namespace DataFlow.Domain.Entities;
 
@@ -57,27 +56,27 @@ public sealed class Customer
     {
         if (dataSourceId == Guid.Empty)
         {
-            throw new ArgumentException("Customer requires a data source id.", nameof(dataSourceId));
+            throw new DomainException("invalid_customer_data_source_id", "Customer requires a data source id.");
         }
 
         if (string.IsNullOrWhiteSpace(externalId))
         {
-            throw new ArgumentException("Customer external id is required.", nameof(externalId));
+            throw new DomainException("invalid_customer_external_id", "Customer external id is required.");
         }
 
         if (string.IsNullOrWhiteSpace(name))
         {
-            throw new ArgumentException("Customer name is required.", nameof(name));
+            throw new DomainException("invalid_customer_name", "Customer name is required.");
         }
 
         if (string.IsNullOrWhiteSpace(email))
         {
-            throw new ArgumentException("Customer email is required.", nameof(email));
+            throw new DomainException("invalid_customer_email", "Customer email is required.");
         }
 
         if (string.IsNullOrWhiteSpace(rowHash))
         {
-            throw new ArgumentException("Customer row hash is required.", nameof(rowHash));
+            throw new DomainException("invalid_customer_row_hash", "Customer row hash is required.");
         }
 
         var utcNow = nowUtc.ToUniversalTime();
@@ -114,38 +113,14 @@ public static class CustomerNaturalKey
     {
         if (dataSourceId == Guid.Empty)
         {
-            throw new ArgumentException("Data source id is required.", nameof(dataSourceId));
+            throw new DomainException("invalid_customer_data_source_id", "Data source id is required.");
         }
 
         if (string.IsNullOrWhiteSpace(normalizedExternalId))
         {
-            throw new ArgumentException("External id is required.", nameof(normalizedExternalId));
+            throw new DomainException("invalid_customer_external_id", "External id is required.");
         }
 
         return string.Concat(dataSourceId.ToString("N"), Separator, normalizedExternalId.Trim());
-    }
-}
-
-public sealed record CustomerRowData
-{
-    [JsonPropertyName("externalId")]
-    public string ExternalId { get; init; } = string.Empty;
-
-    [JsonPropertyName("name")]
-    public string Name { get; init; } = string.Empty;
-
-    [JsonPropertyName("email")]
-    public string Email { get; init; } = string.Empty;
-
-    [JsonPropertyName("registeredAt")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? RegisteredAt { get; init; }
-
-    [JsonPropertyName("isActive")]
-    public bool IsActive { get; init; }
-
-    public string ToCanonicalJson()
-    {
-        return JsonSerializer.Serialize(this);
     }
 }

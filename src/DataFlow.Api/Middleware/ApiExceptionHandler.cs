@@ -22,6 +22,14 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetails) :
                 errors = validation.Errors;
                 break;
             case DomainException domain:
+                if (domain.Code is "job_not_found" or "idempotency_conflict" or "upload_incomplete"
+                    or "invalid_idempotency_key" or "invalid_multipart" or "unexpected_form_field" or "invalid_file_name"
+                    or "file_format_not_allowed" or "file_too_large" or "empty_file" or "invalid_file_format")
+                {
+                    status = domain.Code == "job_not_found" ? 404 : domain.Code is "idempotency_conflict" or "upload_incomplete" ? 409 : 400;
+                    code = domain.Code;
+                    break;
+                }
                 status = domain.Code == "source_not_found" ? StatusCodes.Status404NotFound : StatusCodes.Status400BadRequest;
                 code = domain.Code == "source_not_found" ? "source_not_found"
                     : domain.Code.Contains("schema", StringComparison.Ordinal) || domain.Code == "invalid_csv_delimiter"
@@ -45,13 +53,15 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetails) :
         var problem = new ProblemDetails
         {
             Status = status,
-            Type = $"https://www.rfc-editor.org/rfc/rfc9110#section-{(status == 404 ? "15.5.5" : status == 400 ? "15.5.1" : "15.6.1")}",
+            Type = $"https://www.rfc-editor.org/rfc/rfc9110#section-{(status == 404 ? "15.5.5" : status == 409 ? "15.5.10" : status == 400 ? "15.5.1" : "15.6.1")}",
             Title = code switch
             {
                 "source_not_found" => "Data source was not found.",
+                "job_not_found" => "Job was not found.",
+                "idempotency_conflict" => "Idempotency key has different content.",
                 "invalid_schema" => "Data source schema is invalid.",
                 "validation_failed" => "Request validation failed.",
-                _ => "An unexpected error occurred."
+                _ => status == 400 ? "File upload request is invalid." : "An unexpected error occurred."
             },
             Instance = httpContext.Request.Path
         };

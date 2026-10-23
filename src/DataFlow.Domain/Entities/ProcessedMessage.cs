@@ -1,3 +1,5 @@
+using DataFlow.Domain.Exceptions;
+
 namespace DataFlow.Domain.Entities;
 
 public sealed class ProcessedMessage
@@ -23,17 +25,17 @@ public sealed class ProcessedMessage
     {
         if (string.IsNullOrWhiteSpace(messageId))
         {
-            throw new ArgumentException("Processed message id is required.", nameof(messageId));
+            throw new DomainException("invalid_processed_message_id", "Processed message id is required.");
         }
 
         if (jobId == Guid.Empty)
         {
-            throw new ArgumentException("Processed message job id is required.", nameof(jobId));
+            throw new DomainException("invalid_processed_message_job_id", "Processed message job id is required.");
         }
 
         if (runVersion <= 0)
         {
-            throw new ArgumentException("Processed message run version must be positive.", nameof(runVersion));
+            throw new DomainException("invalid_processed_message_run_version", "Processed message run version must be positive.");
         }
 
         return new ProcessedMessage(messageId.Trim(), jobId, runVersion, nowUtc);

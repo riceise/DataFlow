@@ -134,7 +134,7 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("ck_data_sources_data_type", "data_type = 1");
 
-                            t.HasCheckConstraint("ck_data_sources_formats", "accepted_formats BETWEEN 1 AND 3");
+                            t.HasCheckConstraint("ck_data_sources_formats", "accepted_formats BETWEEN 1 AND 15");
 
                             t.HasCheckConstraint("ck_data_sources_schema_version", "schema_version > 0");
                         });
@@ -473,7 +473,8 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)")
-                        .HasColumnName("idempotency_key");
+                        .HasColumnName("idempotency_key")
+                        .UseCollation("C");
 
                     b.Property<Guid?>("JobId")
                         .HasColumnType("uuid")
@@ -487,13 +488,14 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("DataSourceId");
-
-                    b.HasIndex("IdempotencyKey")
-                        .IsUnique()
-                        .HasDatabaseName("ux_upload_requests_idempotency_key");
+                    b.HasIndex("CreatedAt")
+                        .HasFilter("job_id IS NULL");
 
                     b.HasIndex("JobId");
+
+                    b.HasIndex("DataSourceId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_upload_requests_source_idempotency_key");
 
                     b.ToTable("upload_requests", (string)null);
                 });

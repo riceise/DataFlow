@@ -7,7 +7,7 @@ namespace DataFlow.Application.DataSources;
 internal static class DataSourceMapping
 {
     public static AcceptedFileFormat ToFormats(this SaveDataSourceRequest request) => request.AcceptedFormats!
-        .Aggregate(AcceptedFileFormat.None, (formats, format) => formats | (format == "Csv" ? AcceptedFileFormat.Csv : AcceptedFileFormat.Xlsx));
+        .Aggregate(AcceptedFileFormat.None, (formats, format) => formats | Enum.Parse<AcceptedFileFormat>(format!));
 
     public static DataSourceSchema ToSchema(this SaveDataSourceRequest request)
     {
@@ -23,6 +23,16 @@ internal static class DataSourceMapping
     {
         var schema = source.GetParsedSchema();
         var formats = new List<string>();
+        if (source.AcceptedFormats.HasFlag(AcceptedFileFormat.Pdf))
+        {
+            formats.Add("Pdf");
+        }
+
+        if (source.AcceptedFormats.HasFlag(AcceptedFileFormat.Zip))
+        {
+            formats.Add("Zip");
+        }
+
         if (source.AcceptedFormats.HasFlag(AcceptedFileFormat.Csv))
         {
             formats.Add("Csv");

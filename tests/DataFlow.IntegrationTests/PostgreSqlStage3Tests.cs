@@ -35,7 +35,7 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
     public async Task Migration_CreatesAllTablesAndHasNoPendingChanges()
     {
         await using var context = fixture.CreateContext();
-        Assert.Single(await context.Database.GetAppliedMigrationsAsync());
+        Assert.Equal(context.Database.GetMigrations(), await context.Database.GetAppliedMigrationsAsync());
         Assert.Empty(await context.Database.GetPendingMigrationsAsync());
         Assert.False(context.Database.HasPendingModelChanges());
 
@@ -112,7 +112,7 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
     [Theory]
     [InlineData("customer", "ux_customers_source_natural_key")]
     [InlineData("row", "ux_import_rows_job_row_number")]
-    [InlineData("upload", "ux_upload_requests_idempotency_key")]
+    [InlineData("upload", "ux_upload_requests_source_idempotency_key")]
     [InlineData("processed", "PK_processed_messages")]
     public async Task DuplicateKeys_AreRejectedByPostgreSql(string kind, string constraint)
     {

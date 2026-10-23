@@ -28,6 +28,9 @@ public static class InfrastructureConfigurationExtensions
             .AddOptions<StorageOptions>()
             .Bind(configuration.GetSection(StorageOptions.SectionName))
             .ValidateDataAnnotations()
+            .Validate(options => !string.IsNullOrWhiteSpace(options.Region), "Storage:Region is required.")
+            .Validate(options => string.IsNullOrEmpty(options.AccessKey) == string.IsNullOrEmpty(options.SecretKey),
+                "Storage credentials must be configured together or resolved by the AWS credential chain.")
             .ValidateOnStart();
 
         services

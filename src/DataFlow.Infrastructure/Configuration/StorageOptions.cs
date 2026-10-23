@@ -6,13 +6,10 @@ public sealed class StorageOptions
 {
     public const string SectionName = "Storage";
 
-    [Required(AllowEmptyStrings = false, ErrorMessage = "Storage:Endpoint is required.")]
     public string Endpoint { get; init; } = string.Empty;
 
-    [Required(AllowEmptyStrings = false, ErrorMessage = "Storage:AccessKey is required.")]
     public string AccessKey { get; init; } = string.Empty;
 
-    [Required(AllowEmptyStrings = false, ErrorMessage = "Storage:SecretKey is required.")]
     public string SecretKey { get; init; } = string.Empty;
 
     [Required(AllowEmptyStrings = false, ErrorMessage = "Storage:Bucket is required.")]
@@ -20,4 +17,16 @@ public sealed class StorageOptions
     public string Bucket { get; init; } = string.Empty;
 
     public bool UseSsl { get; init; }
+    public string Region { get; init; } = "us-east-1";
+    // Deployment must provision a private bucket, with public policies/access disabled.
+    [Range(typeof(bool), "true", "true")]
+    public bool RequirePrivateBucket { get; init; } = true;
+    [Range(1, long.MaxValue)]
+    public long MaxFileBytes { get; init; } = 50 * 1024 * 1024;
+    [Required]
+    public string TempDirectory { get; init; } = Path.Combine(Path.GetTempPath(), "dataflow-uploads");
+    [Range(1, 31536000)]
+    public int OrphanAgeSeconds { get; init; } = 86400;
+    [Range(1, 86400)]
+    public int CleanupIntervalSeconds { get; init; } = 300;
 }

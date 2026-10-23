@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using DataFlow.Domain.Enums;
+using DataFlow.Domain.Exceptions;
 using DataFlow.Domain.ValueObjects;
 
 namespace DataFlow.Domain.Entities;
@@ -74,12 +75,12 @@ public sealed class ImportRow
     {
         if (importJobId == Guid.Empty || rowNumber <= 0 || !Enum.IsDefined(status))
         {
-            throw new ArgumentException("Import row requires a job id, positive row number and valid status.");
+            throw new DomainException("invalid_import_row", "Import row requires a job id, positive row number and valid status.");
         }
 
         if (status == ImportRowStatus.Invalid && (string.IsNullOrWhiteSpace(rawData) || errors is not { Count: > 0 }))
         {
-            throw new ArgumentException("Invalid rows require raw data and errors.");
+            throw new DomainException("invalid_import_row_errors", "Invalid rows require raw data and errors.");
         }
 
         var normalizedRaw = string.IsNullOrWhiteSpace(rawData) ? null : rawData.Trim();

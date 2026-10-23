@@ -13,8 +13,8 @@ public sealed class SaveDataSourceRequestValidator : AbstractValidator<SaveDataS
         RuleFor(request => request.Name).NotEmpty().MaximumLength(200).OverridePropertyName("name");
         RuleFor(request => request.AcceptedFormats).NotEmpty().OverridePropertyName("acceptedFormats");
         RuleForEach(request => request.AcceptedFormats)
-            .Must(format => format is "Csv" or "Xlsx")
-            .WithMessage("Accepted formats must be Csv or Xlsx.").OverridePropertyName("acceptedFormats");
+            .Must(format => format is "Csv" or "Xlsx" or "Pdf" or "Zip")
+            .WithMessage("Accepted formats must be Csv, Xlsx, Pdf or Zip.").OverridePropertyName("acceptedFormats");
         RuleFor(request => request).Custom(ValidateSchema);
     }
 

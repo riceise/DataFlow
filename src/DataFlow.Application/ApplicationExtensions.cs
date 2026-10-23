@@ -1,5 +1,6 @@
 using DataFlow.Application.DataSources;
 using DataFlow.Application.Dispatching;
+using DataFlow.Application.Jobs;
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -10,6 +11,10 @@ public static class ApplicationExtensions
     public static IServiceCollection AddDataFlowApplication(this IServiceCollection services)
     {
         services.AddScoped<IDispatcher, Dispatcher>();
+        services.AddScoped<JobQueries>();
+        services.AddScoped<IRequestHandler<GetJobQuery, JobDto>>(p => p.GetRequiredService<JobQueries>());
+        services.AddScoped<IRequestHandler<ListJobsQuery, PagedResult<JobDto>>>(p => p.GetRequiredService<JobQueries>());
+        services.AddScoped<IValidator<ListJobsQuery>, ListJobsValidator>();
         services.AddScoped<DataSourceHandlers>();
         services.AddScoped<IRequestHandler<CreateDataSourceCommand, DataSourceDto>>(provider => provider.GetRequiredService<DataSourceHandlers>());
         services.AddScoped<IRequestHandler<UpdateDataSourceCommand, DataSourceDto>>(provider => provider.GetRequiredService<DataSourceHandlers>());

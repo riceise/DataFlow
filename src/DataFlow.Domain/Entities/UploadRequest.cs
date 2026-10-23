@@ -1,3 +1,5 @@
+using DataFlow.Domain.Exceptions;
+
 namespace DataFlow.Domain.Entities;
 
 public sealed class UploadRequest
@@ -46,27 +48,27 @@ public sealed class UploadRequest
     {
         if (string.IsNullOrWhiteSpace(idempotencyKey))
         {
-            throw new ArgumentException("Idempotency key is required.", nameof(idempotencyKey));
+            throw new DomainException("invalid_idempotency_key", "Idempotency key is required.");
         }
 
         if (idempotencyKey.Length > 128)
         {
-            throw new ArgumentException("Idempotency key is too long.", nameof(idempotencyKey));
+            throw new DomainException("idempotency_key_too_long", "Idempotency key is too long.");
         }
 
         if (string.IsNullOrWhiteSpace(fingerprint) || fingerprint.Length != 64)
         {
-            throw new ArgumentException("Fingerprint must be a SHA-256 hex string.", nameof(fingerprint));
+            throw new DomainException("invalid_fingerprint", "Fingerprint must be a SHA-256 hex string.");
         }
 
         if (dataSourceId == Guid.Empty)
         {
-            throw new ArgumentException("Data source id is required.", nameof(dataSourceId));
+            throw new DomainException("invalid_data_source_id", "Data source id is required.");
         }
 
         if (string.IsNullOrWhiteSpace(storageKey) || string.IsNullOrWhiteSpace(fileSha256))
         {
-            throw new ArgumentException("Storage key and file hash are required.", nameof(storageKey));
+            throw new DomainException("invalid_upload_request_data", "Storage key and file hash are required.");
         }
 
         return new UploadRequest(
@@ -82,7 +84,7 @@ public sealed class UploadRequest
     {
         if (jobId == Guid.Empty)
         {
-            throw new ArgumentException("Job id is required.", nameof(jobId));
+            throw new DomainException("invalid_job_id", "Job id is required.");
         }
 
         JobId = jobId;

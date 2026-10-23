@@ -3,6 +3,7 @@ using DataFlow.Api.Middleware;
 using DataFlow.Application;
 using DataFlow.Infrastructure.Configuration;
 using DataFlow.Infrastructure.Persistence;
+using DataFlow.Infrastructure.Storage;
 using Scalar.AspNetCore;
 using Serilog;
 using Serilog.Formatting.Json;
@@ -21,6 +22,7 @@ builder.Host.UseSerilog((context, services, loggerConfiguration) =>
 
 builder.Services.AddDataFlowConfiguration(builder.Configuration);
 builder.Services.AddDataFlowPersistence();
+builder.Services.AddDataFlowStorage();
 builder.Services.AddDataFlowApplication();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ApiExceptionHandler>();
@@ -49,6 +51,7 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.MapHealthChecks("/health/live");
 app.MapDataSourceEndpoints();
+app.MapFileEndpoints();
 
 await app.RunAsync();
 

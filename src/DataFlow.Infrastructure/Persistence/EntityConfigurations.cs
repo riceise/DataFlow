@@ -12,7 +12,7 @@ internal sealed class DataSourceConfiguration : IEntityTypeConfiguration<DataSou
         {
             table.HasCheckConstraint("ck_data_sources_schema_version", "schema_version > 0");
             table.HasCheckConstraint("ck_data_sources_data_type", "data_type = 1");
-            table.HasCheckConstraint("ck_data_sources_formats", "accepted_formats BETWEEN 1 AND 3");
+            table.HasCheckConstraint("ck_data_sources_formats", "accepted_formats BETWEEN 1 AND 15");
         });
         builder.HasKey(source => source.Id);
         builder.Property(source => source.Id).ValueGeneratedNever();
@@ -135,11 +135,13 @@ internal sealed class UploadRequestConfiguration : IEntityTypeConfiguration<Uplo
         builder.ToTable("upload_requests");
         builder.HasKey(request => request.Id);
         builder.Property(request => request.Id).ValueGeneratedNever();
-        builder.Property(request => request.IdempotencyKey).HasMaxLength(128).IsRequired();
+        builder.Property(request => request.IdempotencyKey).HasMaxLength(128).UseCollation("C").IsRequired();
         builder.Property(request => request.Fingerprint).HasMaxLength(64).IsRequired();
         builder.Property(request => request.StorageKey).HasMaxLength(1024).IsRequired();
         builder.Property(request => request.FileSha256).HasMaxLength(64).IsRequired();
-        builder.HasIndex(request => request.IdempotencyKey).IsUnique().HasDatabaseName("ux_upload_requests_idempotency_key");
+        builder.HasIndex(request => new { request.DataSourceId, request.IdempotencyKey }).IsUnique()
+            .HasDatabaseName("ux_upload_requests_source_idempotency_key");
+        builder.HasIndex(request => request.CreatedAt).HasFilter("job_id IS NULL");
         builder.HasOne<DataSource>().WithMany().HasForeignKey(request => request.DataSourceId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<ImportJob>().WithMany().HasForeignKey(request => request.JobId).OnDelete(DeleteBehavior.Restrict);
     }
