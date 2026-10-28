@@ -237,6 +237,37 @@ public sealed class ImportJobTests
         Assert.Equal(TimeSpan.Zero, job.NextAttemptAt!.Value.Offset);
     }
 
+    [Fact]
+    public void BlankRows_AdvanceCheckpointWithoutChangingCountersOrKnownTotal()
+    {
+        var job = NewJob();
+        job.AcquireLease("worker", Now, 60);
+        job.RecordBatchCompletion(250, 100, 20, 10, 5, Now);
+        job.RecordBatchCompletion(500, 0, 0, 0, 0, Now.AddSeconds(1));
+
+        Assert.Null(job.TotalRows);
+        Assert.Equal(500, job.LastCommittedRowNumber);
+        Assert.Equal(135, job.ProcessedRows);
+        Assert.Equal(job.ProcessedRows, job.InsertedRows + job.UpdatedRows + job.InvalidRows + job.DuplicateRows);
+        job.SetTotalRows(135, Now.AddSeconds(1));
+        job.Complete(Now.AddSeconds(1));
+        Assert.Equal(ImportJobStatus.CompletedWithErrors, job.Status);
+    }
+
+    [Fact]
+    public void FailedLeaseRenewal_DoesNotChangeDeadlineOrVersion()
+    {
+        var job = NewJob();
+        job.AcquireLease("worker", Now, 60);
+        var version = job.LeaseVersion;
+        AssertCode("lease_version_mismatch", () => job.RenewLease("worker", Now.AddSeconds(5), 60, version + 1));
+        AssertCode("lease_owner_mismatch", () => job.RenewLease("other", Now.AddSeconds(5), 60, version));
+        AssertCode("lease_expired", () => job.RenewLease("worker", Now.AddSeconds(60), 60, version));
+        Assert.Equal(Now.AddSeconds(60), job.LeaseUntil);
+        Assert.Equal(version, job.LeaseVersion);
+        job.VerifyLease("worker", version, Now.AddSeconds(59));
+    }
+
     private static ImportJob NewJob(DateTimeOffset? now = null) =>
         ImportJob.Create(Guid.NewGuid(), "customers.csv", "uploads/test", new string('a', 64), "{}", 1, now ?? Now);
 
