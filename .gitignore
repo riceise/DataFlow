@@ -1,4 +1,5 @@
 # Local OpenCode configuration and private project plan
+/Ui/Design/
 /opencode.json
 /.opencode/
 /DataFlow-Architecture.md
@@ -83,3 +84,4 @@ scratch.*
 *~
 Thumbs.db
 .DS_Store
+design/

@@ -1,6 +1,6 @@
 using DataFlow.Infrastructure.Configuration;
+using DataFlow.Infrastructure.Messaging;
 using DataFlow.Infrastructure.Persistence;
-using DataFlow.Worker;
 using Serilog;
 using Serilog.Formatting.Json;
 
@@ -18,7 +18,9 @@ builder.Services.AddSerilog((services, loggerConfiguration) =>
 
 builder.Services.AddDataFlowConfiguration(builder.Configuration);
 builder.Services.AddDataFlowPersistence();
-builder.Services.AddHostedService<Worker>();
+builder.Services.AddScoped<OutboxStore>();
+builder.Services.AddHostedService<OutboxDispatcher>();
+builder.Services.AddHostedService<ImportConsumer>();
 
 var host = builder.Build();
 await host.RunAsync();

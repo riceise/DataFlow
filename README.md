@@ -1,7 +1,7 @@
 # DataFlow
 
 Платформа импорта, валидации и фоновой обработки данных.
-Сейчас реализованы API управления источниками и схемой Customer, доменная модель импорта и хранение в PostgreSQL (EF Core, первая миграция), валидация конфигурации на старте, структурированное JSON-логирование с `X-Correlation-ID`, локальная инфраструктура в Docker Compose и базовый CI.
+Сейчас реализованы API управления источниками и схемой Customer, загрузка файлов в S3/MinIO, создание заданий с transactional outbox в PostgreSQL и доставка сообщений через RabbitMQ в Worker. Есть валидация конфигурации, структурированные JSON-логи, локальная инфраструктура Docker Compose и CI. Обработка строк появится на этапе 7; задания пока остаются в `Queued`.
 
 ## Требования
 
@@ -93,7 +93,15 @@ Worker в отдельном терминале:
 dotnet run --project src/DataFlow.Worker
 ```
 
-При старте API и Worker валидируют секции `ConnectionStrings`, `RabbitMq`, `Storage` и `Import` и пишут структурированные JSON-логи в stdout.
+При старте API и Worker валидируют секции `ConnectionStrings`, `RabbitMq`, `Outbox`, `Storage` и `Import` и пишут структурированные JSON-логи в stdout.
+
+Worker требует PostgreSQL и RabbitMQ из Compose. При недоступном брокере host продолжает работать, dispatcher и consumer переподключаются с backoff до 30 секунд; outbox сохраняется в PostgreSQL. Подключение настраивается через `RabbitMq__Host`, `RabbitMq__Port`, `RabbitMq__VirtualHost`, `RabbitMq__User`, `RabbitMq__Password`.
+
+Dispatcher опрашивает outbox через `PeriodicTimer`: `Outbox:BatchSize` = 32 (1–100), `LeaseSeconds` = 30 (10–300), `PollIntervalSeconds` = 2 (1–60). Короткая транзакция делает `FOR UPDATE SKIP LOCKED` и устанавливает owner/lease; публикация идёт после commit. Durable direct exchange `dataflow.imports` маршрутизирует `import.job.created` в durable quorum queue `imports.process`. Сообщения persistent; `PublishedAt` выставляется только после publisher confirm и при ещё действующем claim. При сбое сохраняется только тип ошибки, счётчик попыток увеличивается, claim освобождается. Истёкший claim можно забрать повторно; доставка at-least-once допускает дубли.
+
+Envelope имеет `contractVersion: "v1"`, `messageId` (outbox id), `type`, `occurredAt` (UTC), `attempt` (начиная с 1), `traceParent` и объект `payload` с `jobId`, `dataSourceId`, `schemaVersion`, `runVersion`. Версия контракта независима от версии схемы и версии запуска. Файлы и содержимое строк в RabbitMQ не передаются.
+
+Consumer использует manual ack и prefetch 1. Неподдерживаемая версия контракта, уже существующий `ProcessedMessage`, отсутствующий job и устаревший `RunVersion` подтверждаются без эффектов. Валидное сообщение логируется с JobId/MessageId/Owner и подтверждается; job, строки и `ProcessedMessages` пока не изменяются. Этап 7 добавит обработку батчей и атомарную финализацию. Retry-очереди и DLQ появятся на этапе 8.
 
 ### Источники данных
 
@@ -134,7 +142,7 @@ dotnet run --project src/DataFlow.Worker
 
 Ошибки возвращаются в формате RFC 9457 (`application/problem+json`): `source_not_found` (404), `invalid_schema` (400), `validation_failed` (400). Валидация добавляет `errors` со списками сообщений по путям, например `schema.fields[0].name`. Внутренние ошибки возвращают 500 с кодом `internal_error` без деталей исключения.
 
-Тесты API используют WebApplicationFactory и отдельный PostgreSQL 18 Testcontainer с применением существующей миграции. Работающие RabbitMQ и MinIO для них не требуются. Загрузка и обработка файлов появятся на последующих этапах.
+Тесты API используют WebApplicationFactory и отдельный PostgreSQL 18 Testcontainer с миграциями; storage в upload-тестах заменён fake. Тесты этапа 6 дополнительно поднимают `rabbitmq:4.0.5-alpine` через Testcontainers.RabbitMq. Для полного набора нужен Docker Linux engine; зависимости из локального Compose для тестов не требуются.
 
 ## Структура
 

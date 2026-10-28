@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+    <head>
+        <meta charset="UTF-8" />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="theme-color" content="#F3F5F4" />
+        <meta
+            name="description"
+            content="DataFlow — рабочая среда для импорта, проверки и контроля данных."
+        />
+        <title>Обзор — DataFlow</title>
+        <script>
+            ;(function () {
+                var theme
+                try {
+                    theme = localStorage.getItem('dataflow.theme')
+                } catch (_) {}
+                document.documentElement.dataset.theme =
+                    theme === 'light' || theme === 'dark'
+                        ? theme
+                        : window.matchMedia('(prefers-color-scheme: dark)').matches
+                          ? 'dark'
+                          : 'light'
+            })()
+        </script>
+    </head>
+    <body>
+        <div id="app"></div>
+        <script type="module" src="/src/main.ts"></script>
+    </body>
+</html>
