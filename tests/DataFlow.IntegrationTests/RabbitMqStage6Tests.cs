@@ -1,12 +1,16 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
+using DataFlow.Application.Abstractions;
 using DataFlow.Domain.Entities;
 using DataFlow.Domain.Enums;
 using DataFlow.Domain.ValueObjects;
 using DataFlow.Infrastructure.Configuration;
+using DataFlow.Infrastructure.Imports;
 using DataFlow.Infrastructure.Messaging;
+using DataFlow.Infrastructure.Parsing;
 using DataFlow.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -49,6 +53,7 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
         await database.OutboxMessages.ExecuteDeleteAsync();
         await database.ImportRows.ExecuteDeleteAsync();
         await database.ImportJobs.ExecuteDeleteAsync();
+        await database.Customers.ExecuteDeleteAsync();
         await database.DataSources.ExecuteDeleteAsync();
         await using var session = await RabbitMqSession.ConnectAsync(rabbit.Options, false, CancellationToken.None);
         await session.Channel.QueuePurgeAsync(RabbitMqSession.Queue);
@@ -188,8 +193,16 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
         await PublishAsync(envelope, envelope);
         await WaitAsync(() => Task.FromResult(_log.Acknowledged >= 2));
         await host.StopAsync();
-        Assert.Equal(2, _log.Messages.Count(x => x.StartsWith("Import message accepted;", StringComparison.Ordinal)));
-        await AssertUnchangedAsync(job.Id, expectedProcessed: 0);
+        Assert.Single(_log.Messages, x => x.StartsWith("Previously processed", StringComparison.Ordinal));
+        await using var database = postgres.CreateContext();
+        var completed = await database.ImportJobs.SingleAsync(x => x.Id == job.Id);
+        Assert.Equal(ImportJobStatus.Completed, completed.Status);
+        Assert.Equal(1, completed.ProcessedRows);
+        Assert.Equal(1, completed.AttemptCount);
+        Assert.Single(await database.ImportRows.ToListAsync());
+        Assert.Single(await database.Customers.ToListAsync());
+        Assert.Single(await database.ProcessedMessages.ToListAsync());
+        Assert.Equal(2, await database.OutboxMessages.CountAsync());
         await AssertQueueEmptyAsync();
     }
 
@@ -294,6 +307,11 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
         var connectionString = context.Database.GetConnectionString();
         builder.Services.AddDbContext<DataFlowDbContext>(configuration => configuration.UseNpgsql(connectionString));
         builder.Services.AddScoped<OutboxStore>();
+        builder.Services.AddOptions<ImportProcessingOptions>();
+        builder.Services.AddScoped<ImportJobStore>();
+        builder.Services.AddScoped<CsvImportProcessor>();
+        builder.Services.AddScoped<ICsvRowParser, CsvRowParser>();
+        builder.Services.AddSingleton<IImportFileReader, TestFileReader>();
         if (dispatcher)
         {
             builder.Services.AddHostedService<OutboxDispatcher>();
@@ -309,7 +327,8 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
     {
         await using var database = postgres.CreateContext();
         var source = DataSource.Create("Messaging", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
-            new DataSourceSchema(1, ["externalId"], [new DataSourceFieldDefinition("externalId", "string", true)]), DateTimeOffset.UtcNow);
+            new DataSourceSchema(1, ["externalId"], [new("externalId", "string", true), new("name", "string", true),
+                new("email", "email", true), new("isActive", "boolean", true)]), DateTimeOffset.UtcNow);
         var job = ImportJob.Create(source.Id, "test.csv", Guid.NewGuid().ToString("N"), new string('a', 64), source.SchemaJson, source.SchemaVersion, DateTimeOffset.UtcNow);
         var payload = new ImportJobCreatedPayload(job.Id, source.Id, job.SchemaVersion, job.RunVersion);
         var message = OutboxMessage.Create("import.job.created", JsonSerializer.Serialize(payload, ImportMessageEnvelope.JsonOptions), DateTimeOffset.UtcNow);
@@ -386,5 +405,11 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
             public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
                 Func<TState, Exception?, string> formatter) => messages.Enqueue(formatter(state, exception));
         }
+    }
+
+    private sealed class TestFileReader : IImportFileReader
+    {
+        public Task<Stream> OpenReadAsync(string objectKey, CancellationToken cancellationToken) =>
+            Task.FromResult<Stream>(new MemoryStream(Encoding.UTF8.GetBytes("externalId,name,email,isActive\n1,Customer,customer@example.test,true\n")));
     }
 }

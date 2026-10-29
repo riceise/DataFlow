@@ -1,5 +1,6 @@
 using System.Text.Json;
 using DataFlow.Infrastructure.Configuration;
+using DataFlow.Infrastructure.Imports;
 using DataFlow.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -129,7 +130,20 @@ public sealed class ImportConsumer(
             return;
         }
 
-        // Этап 7: process batches and atomically finalize job + ProcessedMessage before acknowledging.
-        logger.LogInformation("Import message accepted; row processing starts at stage 7");
+        var processor = scope.ServiceProvider.GetRequiredService<CsvImportProcessor>();
+        while (true)
+        {
+            try
+            {
+                await processor.ProcessAsync(payload.JobId, payload.RunVersion, envelope.MessageId, _owner, cancellationToken);
+                return;
+            }
+            catch (ImportLeaseUnavailableException)
+            {
+                // Keep the delivery unacked without a hot nack/requeue loop. A fresh
+                // attempt rechecks terminal/run guards before attempting takeover.
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            }
+        }
     }
 }

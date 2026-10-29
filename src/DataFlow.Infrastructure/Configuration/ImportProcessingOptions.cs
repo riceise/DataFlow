@@ -18,7 +18,7 @@ public sealed class ImportProcessingOptions
     [Range(1, 65_536, ErrorMessage = "Import:MaxCellLength must be between 1 and 65536.")]
     public int MaxCellLength { get; init; } = 4_096;
 
-    [Range(1, 5_000, ErrorMessage = "Import:BatchSize must be between 1 and 5000.")]
+    [Range(250, 500, ErrorMessage = "Import:BatchSize must be between 250 and 500.")]
     public int BatchSize { get; init; } = 500;
 
     [Range(15, 600, ErrorMessage = "Import:LeaseSeconds must be between 15 and 600.")]

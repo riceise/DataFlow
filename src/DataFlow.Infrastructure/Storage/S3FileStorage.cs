@@ -12,8 +12,14 @@ using Microsoft.Extensions.Options;
 
 namespace DataFlow.Infrastructure.Storage;
 
-public sealed class S3FileStorage(IAmazonS3 client, IOptions<StorageOptions> options, ILogger<S3FileStorage> logger) : IFileStorage
+public sealed class S3FileStorage(IAmazonS3 client, IOptions<StorageOptions> options, ILogger<S3FileStorage> logger) : IFileStorage, IImportFileReader
 {
+    public async Task<Stream> OpenReadAsync(string objectKey, CancellationToken cancellationToken)
+    {
+        var response = await client.GetObjectAsync(options.Value.Bucket, objectKey, cancellationToken);
+        return response.ResponseStream;
+    }
+
     public async Task UploadAsync(string objectKey, string filePath, CancellationToken cancellationToken)
     {
         await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, true);
@@ -67,6 +73,7 @@ public static class StorageExtensions
                 : new AmazonS3Client(new BasicAWSCredentials(options.AccessKey, options.SecretKey), config);
         });
         services.AddScoped<IFileStorage, S3FileStorage>();
+        services.AddScoped<IImportFileReader, S3FileStorage>();
         services.AddScoped<IRequestHandler<UploadFileCommand, JobAcceptedDto>, UploadFileHandler>();
         services.AddHostedService<OrphanCleanupService>();
         return services;
