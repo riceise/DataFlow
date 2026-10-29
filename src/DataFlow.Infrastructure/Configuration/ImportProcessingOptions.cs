@@ -12,6 +12,12 @@ public sealed class ImportProcessingOptions
     [Range(1, 500_000, ErrorMessage = "Import:MaxRows must be between 1 and 500000.")]
     public int MaxRows { get; init; } = 50_000;
 
+    [Range(1, 256, ErrorMessage = "Import:MaxColumns must be between 1 and 256.")]
+    public int MaxColumns { get; init; } = 64;
+
+    [Range(1, 65_536, ErrorMessage = "Import:MaxCellLength must be between 1 and 65536.")]
+    public int MaxCellLength { get; init; } = 4_096;
+
     [Range(1, 5_000, ErrorMessage = "Import:BatchSize must be between 1 and 5000.")]
     public int BatchSize { get; init; } = 500;
 

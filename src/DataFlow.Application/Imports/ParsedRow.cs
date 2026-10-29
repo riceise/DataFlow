@@ -10,4 +10,10 @@ public sealed record ParsedRow(
     IReadOnlyDictionary<string, string?> Values,
     string RawData,
     bool IsEmpty = false,
-    IReadOnlyList<ImportRowError>? Errors = null);
+    IReadOnlyList<ImportRowError>? Errors = null,
+    int? LastPhysicalRowNumber = null)
+{
+    // Multiline CSV records start at RowNumber and commit through their final
+    // physical line. A resume checkpoint must never point inside a quoted cell.
+    public int CheckpointRowNumber => LastPhysicalRowNumber ?? RowNumber;
+}
