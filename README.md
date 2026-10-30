@@ -1,7 +1,7 @@
 # DataFlow
 
 Платформа импорта, валидации и фоновой обработки данных.
-Сейчас реализованы API управления источниками и схемой Customer, загрузка файлов в S3/MinIO, создание заданий с transactional outbox в PostgreSQL и доставка сообщений через RabbitMQ в Worker. Есть валидация конфигурации, структурированные JSON-логи, локальная инфраструктура Docker Compose и CI. Обработка строк появится на этапе 7; задания пока остаются в `Queued`.
+Реализован сквозной импорт CSV: API управления источниками и схемой Customer, потоковая загрузка в S3/MinIO, transactional outbox в PostgreSQL, доставка через RabbitMQ и обработка Worker с lease/fencing и транзакционными батчами. Результаты строк и ошибки доступны через API. Есть валидация конфигурации, структурированные JSON-логи, локальная инфраструктура Docker Compose и CI.
 
 ## Требования
 
@@ -101,7 +101,7 @@ Dispatcher опрашивает outbox через `PeriodicTimer`: `Outbox:Batch
 
 Envelope имеет `contractVersion: "v1"`, `messageId` (outbox id), `type`, `occurredAt` (UTC), `attempt` (начиная с 1), `traceParent` и объект `payload` с `jobId`, `dataSourceId`, `schemaVersion`, `runVersion`. Версия контракта независима от версии схемы и версии запуска. Файлы и содержимое строк в RabbitMQ не передаются.
 
-Consumer использует manual ack и prefetch 1. Неподдерживаемая версия контракта, уже существующий `ProcessedMessage`, отсутствующий job и устаревший `RunVersion` подтверждаются без эффектов. Валидное сообщение логируется с JobId/MessageId/Owner и подтверждается; job, строки и `ProcessedMessages` пока не изменяются. Этап 7 добавит обработку батчей и атомарную финализацию. Retry-очереди и DLQ появятся на этапе 8.
+Consumer использует manual ack и prefetch 1. Неподдерживаемая версия контракта, уже существующий `ProcessedMessage`, отсутствующий job и устаревший `RunVersion` подтверждаются без эффектов. Worker читает CSV из S3 построчно по snapshot схемы; ack отправляется после commit терминального job, `ProcessedMessage` и итогового outbox. Retry-очереди и DLQ появятся на этапе 8.
 
 ### Источники данных
 
@@ -142,7 +142,7 @@ Consumer использует manual ack и prefetch 1. Неподдержива
 
 Ошибки возвращаются в формате RFC 9457 (`application/problem+json`): `source_not_found` (404), `invalid_schema` (400), `validation_failed` (400). Валидация добавляет `errors` со списками сообщений по путям, например `schema.fields[0].name`. Внутренние ошибки возвращают 500 с кодом `internal_error` без деталей исключения.
 
-Тесты API используют WebApplicationFactory и отдельный PostgreSQL 18 Testcontainer с миграциями; storage в upload-тестах заменён fake. Тесты этапа 6 дополнительно поднимают `rabbitmq:4.0.5-alpine` через Testcontainers.RabbitMq. Для полного набора нужен Docker Linux engine; зависимости из локального Compose для тестов не требуются.
+Тесты API используют WebApplicationFactory и отдельный PostgreSQL 18 Testcontainer с миграциями; storage в upload-тестах заменён fake. Broker-тесты поднимают `rabbitmq:4.0.5-alpine`; сквозные тесты CSV дополнительно запускают MinIO с тем же закреплённым digest, что и Compose. Для полного набора нужен Docker Linux engine; зависимости из локального Compose для тестов не требуются.
 
 ### CSV parser (этап 7, пакет B)
 
@@ -182,8 +182,45 @@ CRLF, LF и CR поддерживаются. Завершающий перево
 `cell_limit_exceeded`, `csv_record_too_large`), кодировки (`invalid_csv_encoding`)
 и quoting (`invalid_csv_syntax`) отклоняют файл через `ImportFileException` с
 безопасным сообщением. Внутренние диагностики CsvHelper и значения ячеек в
-исключения не включаются. Подключение parser к Worker и сохранение результатов —
-следующий пакет C.
+исключения не включаются.
+
+### Сквозной импорт CSV
+
+Создайте приватный bucket в MinIO и задайте одинаковые настройки `Storage` для API и Worker
+(`Endpoint`, `Bucket`, `AccessKey`, `SecretKey`, `Region`). Для загрузки используйте
+`POST /api/v1/data-sources/{id}/files`, multipart с единственным файлом и обязательным
+заголовком `Idempotency-Key`. Ответ `202` содержит `jobId` и Location `/api/v1/jobs/{jobId}`.
+
+`GET /api/v1/jobs/{jobId}` возвращает статус и счётчики. `totalRows` равен `null` до EOF;
+после EOF — числу записей данных, без пустых строк. Конечные статусы — `Completed`
+или `CompletedWithErrors`, при отказе файла/инфраструктуры — `Failed`.
+
+`GET /api/v1/import-jobs/{jobId}/rows?status=Invalid&page=1&pageSize=200`
+возвращает `{items, page, pageSize, total}`. Статус необязателен: `Inserted`, `Updated`,
+`Invalid`, `Duplicate`; pageSize — 1–200 (default 50), порядок — RowNumber ASC.
+`total` здесь означает число уже сохранённых строк с учётом фильтра.
+Invalid содержит `rawData` и ошибки `{field, code, message}`; неизвестный job даёт
+404 `job_not_found`, неверные параметры — 400 `validation_failed` Problem Details.
+
+Worker сохраняет по `Import:BatchSize` строк (250–500, default 500). Lease
+`Import:LeaseSeconds` (15–600, default 60) продлевается в транзакции батча; owner,
+version, run и срок проверяются по времени PostgreSQL с блокировкой job. Customer,
+ImportRow, счётчики и физический checkpoint коммитятся вместе. В памяти остаются
+текущий батч и HashSet ключей файла; EF tracker очищается после каждого батча.
+Новый ключ создаёт Customer, изменённый hash обновляет его, одинаковый hash даёт
+Duplicate; повтор ключа внутри файла — Invalid `duplicate_key_in_file` даже при иных значениях.
+
+Сквозной fixture `tests/DataFlow.IntegrationTests/Fixtures/MixedCustomerCsv.cs`
+генерирует 1 000 синтетических строк: 100 Inserted, 100 Updated, 100 Duplicate,
+700 Invalid (required/type/length/email/date и повторы ключей). Перед ним импортируются
+200 исходных клиентов; итог — 300 валидных Customer. `CsvEndToEndStage7Tests`
+проверяет полный путь API → S3 → outbox → RabbitMQ → Worker → API при батчах 250 и 500,
+результат каждой строки, повтор доставки и HTTP idempotency.
+
+Ограничения: нет фонового heartbeat, retry-очередей/DLQ, reconciliation и retry/cancel API
+(этап 8). Очень медленное чтение может привести к потере lease. При отказе файла ранее
+закоммиченные батчи сохраняются: атомарность — на уровне батча. XLSX, экспорт ошибок
+и Dashboard — этап 9; пока Worker обрабатывает только CSV.
 
 ## Структура
 

@@ -1,8 +1,5 @@
-using DataFlow.Application.Abstractions;
 using DataFlow.Infrastructure.Configuration;
 using DataFlow.Infrastructure.Imports;
-using DataFlow.Infrastructure.Messaging;
-using DataFlow.Infrastructure.Parsing;
 using DataFlow.Infrastructure.Persistence;
 using DataFlow.Infrastructure.Storage;
 using Serilog;
@@ -23,12 +20,7 @@ builder.Services.AddSerilog((services, loggerConfiguration) =>
 builder.Services.AddDataFlowConfiguration(builder.Configuration);
 builder.Services.AddDataFlowPersistence();
 builder.Services.AddDataFlowStorage();
-builder.Services.AddScoped<ICsvRowParser, CsvRowParser>();
-builder.Services.AddScoped<ImportJobStore>();
-builder.Services.AddScoped<CsvImportProcessor>();
-builder.Services.AddScoped<OutboxStore>();
-builder.Services.AddHostedService<OutboxDispatcher>();
-builder.Services.AddHostedService<ImportConsumer>();
+builder.Services.AddDataFlowImportWorker();
 
 var host = builder.Build();
 await host.RunAsync();
