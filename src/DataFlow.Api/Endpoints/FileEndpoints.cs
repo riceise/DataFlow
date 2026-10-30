@@ -24,6 +24,10 @@ public static class FileEndpoints
             Results.Ok(await dispatcher.DispatchAsync<ListJobsQuery, PagedResult<JobDto>>(new(id, page, pageSize, status), ct)));
         endpoints.MapGet("/api/v1/jobs/{id:guid}", async (Guid id, IDispatcher dispatcher, CancellationToken ct) =>
             Results.Ok(await dispatcher.DispatchAsync<GetJobQuery, JobDto>(new(id), ct)));
+        endpoints.MapGet("/api/v1/import-jobs/{id:guid}/rows", async (Guid id, IDispatcher dispatcher,
+            CancellationToken ct, int page = 1, int pageSize = 50, string? status = null) =>
+            Results.Ok(await dispatcher.DispatchAsync<ListJobRowsQuery, PagedResult<JobRowDto>>(new(id, page, pageSize, status), ct)))
+            .WithTags("Import jobs").Produces<PagedResult<JobRowDto>>().ProducesProblem(400).ProducesProblem(404);
         return endpoints;
     }
 

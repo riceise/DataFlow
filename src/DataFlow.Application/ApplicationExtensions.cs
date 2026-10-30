@@ -15,6 +15,8 @@ public static class ApplicationExtensions
         services.AddScoped<IRequestHandler<GetJobQuery, JobDto>>(p => p.GetRequiredService<JobQueries>());
         services.AddScoped<IRequestHandler<ListJobsQuery, PagedResult<JobDto>>>(p => p.GetRequiredService<JobQueries>());
         services.AddScoped<IValidator<ListJobsQuery>, ListJobsValidator>();
+        services.AddScoped<IRequestHandler<ListJobRowsQuery, PagedResult<JobRowDto>>, JobRowQueries>();
+        services.AddScoped<IValidator<ListJobRowsQuery>, ListJobRowsValidator>();
         services.AddScoped<DataSourceHandlers>();
         services.AddScoped<IRequestHandler<CreateDataSourceCommand, DataSourceDto>>(provider => provider.GetRequiredService<DataSourceHandlers>());
         services.AddScoped<IRequestHandler<UpdateDataSourceCommand, DataSourceDto>>(provider => provider.GetRequiredService<DataSourceHandlers>());
