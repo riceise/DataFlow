@@ -38,6 +38,33 @@ public sealed class ImportJob
 
     public Guid Id { get; private set; }
     public Guid DataSourceId { get; private set; }
+    public Guid? RuleSetVersionId { get; private set; }
+    public Guid? RuleDocumentId { get; private set; }
+    public string? ExecutionFingerprint { get; private set; }
+    public string? RuleSetNameAtSubmission { get; private set; }
+    public int? RuleVersionNumberAtSubmission { get; private set; }
+    public long ValidRows { get; private set; }
+    public void PinRules(Guid version, Guid document, string fingerprint, string name, int number)
+    {
+        if (RuleDocumentId is not null || ProcessedRows != 0)
+        {
+            throw new DomainException("rules_already_pinned", "Job rules are immutable.");
+        }
+
+        RuleSetVersionId = version; RuleDocumentId = document; ExecutionFingerprint = fingerprint;
+        RuleSetNameAtSubmission = name; RuleVersionNumberAtSubmission = number;
+    }
+    public void MigrateLegacyRules(Guid version, Guid document, string fingerprint, string name, int number)
+    {
+        if (RuleDocumentId is not null || RuleSetVersionId is not null || number != SchemaVersion ||
+            version == Guid.Empty || document == Guid.Empty)
+        {
+            throw new DomainException("rules_already_pinned", "Only an unpinned legacy job can be migrated.");
+        }
+
+        RuleSetVersionId = version; RuleDocumentId = document; ExecutionFingerprint = fingerprint;
+        RuleSetNameAtSubmission = name; RuleVersionNumberAtSubmission = number;
+    }
     public string OriginalFileName { get; private set; }
     public string StorageKey { get; private set; }
     public string FileSha256 { get; private set; }
@@ -175,7 +202,8 @@ public sealed class ImportJob
         int updated,
         int invalid,
         int duplicate,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        int valid = 0)
     {
         if (lastRowNumberInBatch <= 0)
         {
@@ -187,7 +215,7 @@ public sealed class ImportJob
             throw new DomainException("non_monotonic_row_number", "Batch row numbers must increase.");
         }
 
-        if (inserted < 0 || updated < 0 || invalid < 0 || duplicate < 0)
+        if (inserted < 0 || updated < 0 || invalid < 0 || duplicate < 0 || valid < 0)
         {
             throw new DomainException("invalid_row_counts", "Batch row counts cannot be negative.");
         }
@@ -197,7 +225,7 @@ public sealed class ImportJob
             throw new DomainException("job_not_processing", $"Job cannot record batch in status {Status}.");
         }
 
-        var batchRows = (long)inserted + updated + invalid + duplicate;
+        var batchRows = (long)inserted + updated + invalid + duplicate + valid;
         if (TotalRows is not null && ProcessedRows + batchRows > TotalRows)
         {
             throw new DomainException("row_count_exceeds_total", "Processed rows cannot exceed total rows.");
@@ -208,7 +236,8 @@ public sealed class ImportJob
         UpdatedRows += updated;
         InvalidRows += invalid;
         DuplicateRows += duplicate;
-        ProcessedRows = InsertedRows + UpdatedRows + InvalidRows + DuplicateRows;
+        ValidRows += valid;
+        ProcessedRows = ValidRows + InsertedRows + UpdatedRows + InvalidRows + DuplicateRows;
         UpdatedAt = nowUtc.ToUniversalTime();
     }
 

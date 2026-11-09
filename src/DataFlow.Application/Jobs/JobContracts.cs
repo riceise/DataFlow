@@ -6,11 +6,12 @@ using FluentValidation;
 namespace DataFlow.Application.Jobs;
 
 public sealed record UploadFileCommand(Guid DataSourceId, string IdempotencyKey, string FilePath,
-    string FileName, string FileSha256, AcceptedFileFormat Format) : ICommand<JobAcceptedDto>;
+    string FileName, string FileSha256, AcceptedFileFormat Format, Guid? RuleSetVersionId = null) : ICommand<JobAcceptedDto>;
 public sealed record JobAcceptedDto(Guid JobId, string Status);
 public sealed record JobDto(Guid Id, Guid DataSourceId, string Status, int SchemaVersion,
     DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt,
-    int? TotalRows, long ProcessedRows, long InsertedRows, long UpdatedRows, long InvalidRows, long DuplicateRows);
+    int? TotalRows, long ProcessedRows, long InsertedRows, long UpdatedRows, long InvalidRows, long DuplicateRows,
+    long ValidRows = 0, Guid? RuleSetVersionId = null, string? RuleSetName = null, int? RuleVersionNumber = null);
 public sealed record GetJobQuery(Guid Id) : IQuery<JobDto>;
 public sealed record ListJobsQuery(Guid DataSourceId, int Page = 1, int PageSize = 50, string? Status = null)
     : IQuery<PagedResult<JobDto>>;

@@ -44,6 +44,7 @@ public sealed class FileUploadsStage5Tests(DataSourcesApiFixture fixture) : ICla
         var source = DataSource.Create("Uploads", DataSourceDataType.Customer, AcceptedFileFormat.Csv | AcceptedFileFormat.Pdf,
             new DataSourceSchema(1, ["externalId"], [new DataSourceFieldDefinition("externalId", "string", true)]), DateTimeOffset.UtcNow);
         db.DataSources.Add(source);
+        source.AssignOwner(TestAuthentication.UserId);
         await db.SaveChangesAsync();
         _sourceId = source.Id;
         _factory = fixture.WithWebHostBuilder(builder =>
@@ -53,7 +54,11 @@ public sealed class FileUploadsStage5Tests(DataSourcesApiFixture fixture) : ICla
                 ["Storage:TempDirectory"] = _temp,
                 ["Storage:MaxFileBytes"] = "1024"
             }));
-            builder.ConfigureServices(services => services.Replace(ServiceDescriptor.Singleton<IFileStorage>(_storage)));
+            builder.ConfigureServices(services =>
+            {
+                services.Replace(ServiceDescriptor.Singleton<IFileStorage>(_storage));
+                services.Replace(ServiceDescriptor.Singleton<ICurrentUser, TestCurrentUser>());
+            });
         });
         _client = _factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
     }
@@ -194,6 +199,7 @@ public sealed class FileUploadsStage5Tests(DataSourcesApiFixture fixture) : ICla
         var original = await db.DataSources.SingleAsync();
         var source = DataSource.Create("Other", original.DataType, original.AcceptedFormats,
             original.GetParsedSchema(), DateTimeOffset.UtcNow);
+        source.AssignOwner(TestAuthentication.UserId);
         db.DataSources.Add(source);
         await db.SaveChangesAsync();
         _sourceId = source.Id;
@@ -412,7 +418,7 @@ public sealed class FileUploadsStage5Tests(DataSourcesApiFixture fixture) : ICla
         Assert.Equal(code, json.RootElement.GetProperty("code").GetString());
     }
 
-    private sealed class FakeStorage : IFileStorage
+    internal sealed class FakeStorage : IFileStorage
     {
         public ConcurrentDictionary<string, byte[]> Objects { get; } = new();
         public int Uploads;

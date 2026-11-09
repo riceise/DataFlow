@@ -11,13 +11,15 @@ internal sealed class DataSourceConfiguration : IEntityTypeConfiguration<DataSou
         builder.ToTable("data_sources", table =>
         {
             table.HasCheckConstraint("ck_data_sources_schema_version", "schema_version > 0");
-            table.HasCheckConstraint("ck_data_sources_data_type", "data_type = 1");
+            table.HasCheckConstraint("ck_data_sources_data_type", "data_type IN (1, 2)");
             table.HasCheckConstraint("ck_data_sources_formats", "accepted_formats BETWEEN 1 AND 15");
         });
         builder.HasKey(source => source.Id);
         builder.Property(source => source.Id).ValueGeneratedNever();
         builder.Property(source => source.Name).HasMaxLength(200).IsRequired();
         builder.Property(source => source.SchemaJson).HasColumnType("jsonb").IsRequired();
+        builder.HasIndex(source => new { source.OwnerUserId, source.CreatedAt });
+        builder.HasOne<RuleSetVersion>().WithMany().HasForeignKey(s => s.DefaultRuleSetVersionId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -29,7 +31,7 @@ internal sealed class ImportJobConfiguration : IEntityTypeConfiguration<ImportJo
         {
             table.HasCheckConstraint("ck_import_jobs_status", "status BETWEEN 1 AND 7");
             table.HasCheckConstraint("ck_import_jobs_counters",
-                "processed_rows = inserted_rows + updated_rows + invalid_rows + duplicate_rows AND " +
+                "processed_rows = valid_rows + inserted_rows + updated_rows + invalid_rows + duplicate_rows AND valid_rows >= 0 AND " +
                 "inserted_rows >= 0 AND updated_rows >= 0 AND invalid_rows >= 0 AND duplicate_rows >= 0 AND " +
                 "(total_rows IS NULL OR total_rows >= processed_rows) AND last_committed_row_number >= 0");
             table.HasCheckConstraint("ck_import_jobs_versions",
@@ -46,6 +48,11 @@ internal sealed class ImportJobConfiguration : IEntityTypeConfiguration<ImportJo
         builder.Property(job => job.LeaseOwner).HasMaxLength(200);
         builder.Property(job => job.LeaseVersion).IsConcurrencyToken();
         builder.Property(job => job.RunVersion).IsConcurrencyToken();
+        builder.Property(job => job.ExecutionFingerprint).HasMaxLength(64);
+        builder.HasIndex(job => job.ExecutionFingerprint);
+        builder.Property(job => job.RuleSetNameAtSubmission).HasMaxLength(200);
+        builder.HasOne<RuleSetVersion>().WithMany().HasForeignKey(j => new { j.RuleSetVersionId, j.RuleDocumentId })
+            .HasPrincipalKey(v => new { v.Id, v.RuleDocumentId }).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<DataSource>().WithMany().HasForeignKey(job => job.DataSourceId).OnDelete(DeleteBehavior.Restrict);
         builder.HasIndex(job => job.CreatedAt).IsDescending().HasDatabaseName("ix_import_jobs_created_at");
         builder.HasIndex(job => new { job.Status, job.CreatedAt }).IsDescending(false, true)
@@ -60,7 +67,7 @@ internal sealed class ImportRowConfiguration : IEntityTypeConfiguration<ImportRo
         builder.ToTable("import_rows", table =>
         {
             table.HasCheckConstraint("ck_import_rows_number", "row_number > 0");
-            table.HasCheckConstraint("ck_import_rows_status", "status BETWEEN 1 AND 4");
+            table.HasCheckConstraint("ck_import_rows_status", "status BETWEEN 1 AND 5");
             table.HasCheckConstraint("ck_import_rows_invalid_details",
                 "status <> 3 OR (raw_data IS NOT NULL AND errors_json IS NOT NULL AND " +
                 "jsonb_typeof(errors_json) = 'array' AND errors_json <> '[]'::jsonb)");

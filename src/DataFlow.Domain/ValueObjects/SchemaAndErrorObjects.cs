@@ -23,7 +23,8 @@ public sealed record DataSourceFieldDefinition
         bool required,
         int? maxLength = null,
         string? format = null,
-        string? regexPattern = null)
+        string? regexPattern = null,
+        string? logicalName = null)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -46,10 +47,14 @@ public sealed record DataSourceFieldDefinition
         MaxLength = maxLength;
         Format = string.IsNullOrWhiteSpace(format) ? null : format.Trim();
         RegexPattern = string.IsNullOrWhiteSpace(regexPattern) ? null : regexPattern;
+        LogicalName = string.IsNullOrWhiteSpace(logicalName) ? Name : logicalName.Trim();
     }
 
     [JsonPropertyName("name")]
     public string Name { get; }
+
+    [JsonIgnore]
+    public string LogicalName { get; }
 
     [JsonPropertyName("type")]
     public string Type { get; }
@@ -84,7 +89,8 @@ public sealed record DataSourceSchema
         int version,
         IReadOnlyList<string> keyFields,
         IReadOnlyList<DataSourceFieldDefinition> fields,
-        string csvDelimiter = ",")
+        string csvDelimiter = ",",
+        bool allowUnknownColumns = false)
     {
         if (version <= 0)
         {
@@ -147,6 +153,7 @@ public sealed record DataSourceSchema
         KeyFields = normalizedKeyFields.AsReadOnly();
         Fields = fields.ToList().AsReadOnly();
         CsvDelimiter = csvDelimiter;
+        AllowUnknownColumns = allowUnknownColumns;
     }
 
     [JsonPropertyName("version")]
@@ -160,6 +167,7 @@ public sealed record DataSourceSchema
 
     [JsonPropertyName("csvDelimiter")]
     public string CsvDelimiter { get; }
+    public bool AllowUnknownColumns { get; }
 
     public string ToJson() => JsonSerializer.Serialize(this, SerializerOptions);
 
@@ -170,7 +178,7 @@ public sealed record DataSourceSchema
             throw new DomainException("invalid_schema_version", "Schema version must be greater than zero.");
         }
 
-        return new DataSourceSchema(version, KeyFields, Fields, CsvDelimiter);
+        return new DataSourceSchema(version, KeyFields, Fields, CsvDelimiter, AllowUnknownColumns);
     }
 
     public static DataSourceSchema FromJson(string json)
@@ -204,6 +212,7 @@ public sealed record DataSourceSchema
         }
 
         return Version == other.Version
+            && AllowUnknownColumns == other.AllowUnknownColumns
             && CsvDelimiter == other.CsvDelimiter
             && KeyFields.SequenceEqual(other.KeyFields, StringComparer.Ordinal)
             && Fields.SequenceEqual(other.Fields);
@@ -213,6 +222,7 @@ public sealed record DataSourceSchema
     {
         var hash = new HashCode();
         hash.Add(Version);
+        hash.Add(AllowUnknownColumns);
         hash.Add(CsvDelimiter, StringComparer.Ordinal);
 
         foreach (var keyField in KeyFields)

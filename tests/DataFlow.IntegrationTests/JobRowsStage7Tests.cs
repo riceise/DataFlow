@@ -129,6 +129,7 @@ public sealed class JobRowsStage7Tests(DataSourcesApiFixture fixture) : IClassFi
         var source = DataSource.Create("Rows API", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
             new DataSourceSchema(1, ["externalId"], [new("externalId", "string", true)]), DateTimeOffset.UtcNow);
         var job = ImportJob.Create(source.Id, "rows.csv", Guid.NewGuid().ToString("N"), new string('a', 64), source.SchemaJson, 1, DateTimeOffset.UtcNow);
+        source.AssignOwner(TestAuthentication.UserId);
         job.AcquireLease("test", DateTimeOffset.UtcNow, 60);
         database.DataSources.Add(source);
         database.ImportJobs.Add(job);

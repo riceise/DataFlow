@@ -22,6 +22,21 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetails) :
                 errors = validation.Errors;
                 break;
             case DomainException domain:
+                if (domain.Code is "invalid_rule_definition" or "rule_version_not_found" or "revision_conflict" or
+                    "rule_set_archived" or "rule_type_mismatch" or "share_recipient_not_found" or "source_inactive")
+                {
+                    code = domain.Code;
+                    status = domain.Code is "rule_version_not_found" or "share_recipient_not_found" ? 404 :
+                        domain.Code is "revision_conflict" or "rule_set_archived" ? 409 : 400;
+                    errors = new Dictionary<string, string[]> { ["definition"] = [domain.Message] };
+                    break;
+                }
+                if (domain.Code is "job_not_retryable" or "job_not_cancellable")
+                {
+                    status = StatusCodes.Status409Conflict;
+                    code = domain.Code;
+                    break;
+                }
                 if (domain.Code is "job_not_found" or "idempotency_conflict" or "upload_incomplete"
                     or "invalid_idempotency_key" or "invalid_multipart" or "unexpected_form_field" or "invalid_file_name"
                     or "file_format_not_allowed" or "file_too_large" or "empty_file" or "invalid_file_format")
@@ -58,6 +73,8 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetails) :
             {
                 "source_not_found" => "Data source was not found.",
                 "job_not_found" => "Job was not found.",
+                "job_not_retryable" => "Job cannot be retried.",
+                "job_not_cancellable" => "Job cannot be cancelled.",
                 "idempotency_conflict" => "Idempotency key has different content.",
                 "invalid_schema" => "Data source schema is invalid.",
                 "validation_failed" => "Request validation failed.",

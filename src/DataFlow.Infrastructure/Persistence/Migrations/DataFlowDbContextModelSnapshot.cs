@@ -105,6 +105,10 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("data_type");
 
+                    b.Property<Guid?>("DefaultRuleSetVersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("default_rule_set_version_id");
+
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean")
                         .HasColumnName("is_active");
@@ -114,6 +118,10 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("character varying(200)")
                         .HasColumnName("name");
+
+                    b.Property<Guid?>("OwnerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_user_id");
 
                     b.Property<string>("SchemaJson")
                         .IsRequired()
@@ -130,9 +138,13 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("DefaultRuleSetVersionId");
+
+                    b.HasIndex("OwnerUserId", "CreatedAt");
+
                     b.ToTable("data_sources", null, t =>
                         {
-                            t.HasCheckConstraint("ck_data_sources_data_type", "data_type = 1");
+                            t.HasCheckConstraint("ck_data_sources_data_type", "data_type IN (1, 2)");
 
                             t.HasCheckConstraint("ck_data_sources_formats", "accepted_formats BETWEEN 1 AND 15");
 
@@ -169,6 +181,11 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                     b.Property<long>("DuplicateRows")
                         .HasColumnType("bigint")
                         .HasColumnName("duplicate_rows");
+
+                    b.Property<string>("ExecutionFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("execution_fingerprint");
 
                     b.Property<string>("FileSha256")
                         .IsRequired()
@@ -229,6 +246,23 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("retryable");
 
+                    b.Property<Guid?>("RuleDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_document_id");
+
+                    b.Property<string>("RuleSetNameAtSubmission")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("rule_set_name_at_submission");
+
+                    b.Property<Guid?>("RuleSetVersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_set_version_id");
+
+                    b.Property<int?>("RuleVersionNumberAtSubmission")
+                        .HasColumnType("integer")
+                        .HasColumnName("rule_version_number_at_submission");
+
                     b.Property<int>("RunVersion")
                         .IsConcurrencyToken()
                         .HasColumnType("integer")
@@ -269,6 +303,10 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("updated_rows");
 
+                    b.Property<long>("ValidRows")
+                        .HasColumnType("bigint")
+                        .HasColumnName("valid_rows");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CreatedAt")
@@ -277,13 +315,17 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("DataSourceId");
 
+                    b.HasIndex("ExecutionFingerprint");
+
+                    b.HasIndex("RuleSetVersionId", "RuleDocumentId");
+
                     b.HasIndex("Status", "CreatedAt")
                         .IsDescending(false, true)
                         .HasDatabaseName("ix_import_jobs_status_created_at");
 
                     b.ToTable("import_jobs", null, t =>
                         {
-                            t.HasCheckConstraint("ck_import_jobs_counters", "processed_rows = inserted_rows + updated_rows + invalid_rows + duplicate_rows AND inserted_rows >= 0 AND updated_rows >= 0 AND invalid_rows >= 0 AND duplicate_rows >= 0 AND (total_rows IS NULL OR total_rows >= processed_rows) AND last_committed_row_number >= 0");
+                            t.HasCheckConstraint("ck_import_jobs_counters", "processed_rows = valid_rows + inserted_rows + updated_rows + invalid_rows + duplicate_rows AND valid_rows >= 0 AND inserted_rows >= 0 AND updated_rows >= 0 AND invalid_rows >= 0 AND duplicate_rows >= 0 AND (total_rows IS NULL OR total_rows >= processed_rows) AND last_committed_row_number >= 0");
 
                             t.HasCheckConstraint("ck_import_jobs_retryable", "retryable IN (0, 1)");
 
@@ -356,7 +398,7 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_import_rows_number", "row_number > 0");
 
-                            t.HasCheckConstraint("ck_import_rows_status", "status BETWEEN 1 AND 4");
+                            t.HasCheckConstraint("ck_import_rows_status", "status BETWEEN 1 AND 5");
                         });
                 });
 
@@ -443,6 +485,191 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("DataFlow.Domain.Entities.RuleDocument", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("content_hash");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("DefinitionFormatVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("definition_format_version");
+
+                    b.Property<string>("DefinitionJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("definition_json");
+
+                    b.Property<string>("EngineVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("engine_version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DefinitionFormatVersion", "EngineVersion", "ContentHash")
+                        .IsUnique();
+
+                    b.ToTable("rule_documents", (string)null);
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.RuleSet", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DataType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("data_type");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<bool>("IsArchived")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_archived");
+
+                    b.Property<int>("LastVersionNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("last_version_number");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_user_id");
+
+                    b.Property<int>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerUserId", "IsArchived", "UpdatedAt");
+
+                    b.ToTable("rule_sets", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_rule_sets_type", "data_type IN ('Customer', 'Tabular')");
+                        });
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.RuleSetVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("BasedOnVersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("based_on_version_id");
+
+                    b.Property<string>("ChangeNote")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("change_note");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Label")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("label");
+
+                    b.Property<Guid>("RuleDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_document_id");
+
+                    b.Property<Guid>("RuleSetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_set_id");
+
+                    b.Property<int>("VersionNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("version_number");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BasedOnVersionId");
+
+                    b.HasIndex("RuleDocumentId");
+
+                    b.HasIndex("RuleSetId", "VersionNumber")
+                        .IsUnique();
+
+                    b.ToTable("rule_set_versions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_rule_versions_number", "version_number > 0");
+                        });
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.RuleVersionGrant", b =>
+                {
+                    b.Property<Guid>("RuleSetVersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_set_version_id");
+
+                    b.Property<Guid>("RecipientUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recipient_user_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.HasKey("RuleSetVersionId", "RecipientUserId");
+
+                    b.HasIndex("RecipientUserId", "CreatedAt");
+
+                    b.ToTable("rule_version_grants", (string)null);
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.RuleVersionPublication", b =>
+                {
+                    b.Property<Guid>("RuleSetVersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_set_version_id");
+
+                    b.Property<DateTimeOffset>("PublishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at");
+
+                    b.HasKey("RuleSetVersionId");
+
+                    b.HasIndex("PublishedAt");
+
+                    b.ToTable("rule_version_publications", (string)null);
+                });
+
             modelBuilder.Entity("DataFlow.Domain.Entities.UploadRequest", b =>
                 {
                     b.Property<Guid>("Id")
@@ -500,6 +727,259 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                     b.ToTable("upload_requests", (string)null);
                 });
 
+            modelBuilder.Entity("DataFlow.Domain.Entities.UserRuleLibraryEntry", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("RuleSetVersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_set_version_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.HasKey("UserId", "RuleSetVersionId");
+
+                    b.HasIndex("RuleSetVersionId");
+
+                    b.ToTable("user_rule_library_entries", (string)null);
+                });
+
+            modelBuilder.Entity("DataFlow.Infrastructure.Persistence.ApplicationUser", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AccessFailedCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("access_failed_count");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .HasColumnType("text")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("email");
+
+                    b.Property<bool>("EmailConfirmed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("email_confirmed");
+
+                    b.Property<bool>("LockoutEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("lockout_enabled");
+
+                    b.Property<DateTimeOffset?>("LockoutEnd")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("lockout_end");
+
+                    b.Property<string>("NormalizedEmail")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("normalized_email");
+
+                    b.Property<string>("NormalizedUserName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("normalized_user_name");
+
+                    b.Property<string>("PasswordHash")
+                        .HasColumnType("text")
+                        .HasColumnName("password_hash");
+
+                    b.Property<string>("PhoneNumber")
+                        .HasColumnType("text")
+                        .HasColumnName("phone_number");
+
+                    b.Property<bool>("PhoneNumberConfirmed")
+                        .HasColumnType("boolean")
+                        .HasColumnName("phone_number_confirmed");
+
+                    b.Property<string>("SecurityStamp")
+                        .HasColumnType("text")
+                        .HasColumnName("security_stamp");
+
+                    b.Property<bool>("TwoFactorEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("two_factor_enabled");
+
+                    b.Property<string>("UserName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("user_name");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NormalizedEmail")
+                        .HasDatabaseName("EmailIndex");
+
+                    b.HasIndex("NormalizedUserName")
+                        .IsUnique()
+                        .HasDatabaseName("UserNameIndex");
+
+                    b.ToTable("AspNetUsers", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRole<System.Guid>", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ConcurrencyStamp")
+                        .IsConcurrencyToken()
+                        .HasColumnType("text")
+                        .HasColumnName("concurrency_stamp");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("NormalizedName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("normalized_name");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NormalizedName")
+                        .IsUnique()
+                        .HasDatabaseName("RoleNameIndex");
+
+                    b.ToTable("AspNetRoles", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ClaimType")
+                        .HasColumnType("text")
+                        .HasColumnName("claim_type");
+
+                    b.Property<string>("ClaimValue")
+                        .HasColumnType("text")
+                        .HasColumnName("claim_value");
+
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("role_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RoleId");
+
+                    b.ToTable("AspNetRoleClaims", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<System.Guid>", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ClaimType")
+                        .HasColumnType("text")
+                        .HasColumnName("claim_type");
+
+                    b.Property<string>("ClaimValue")
+                        .HasColumnType("text")
+                        .HasColumnName("claim_value");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("AspNetUserClaims", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<System.Guid>", b =>
+                {
+                    b.Property<string>("LoginProvider")
+                        .HasColumnType("text")
+                        .HasColumnName("login_provider");
+
+                    b.Property<string>("ProviderKey")
+                        .HasColumnType("text")
+                        .HasColumnName("provider_key");
+
+                    b.Property<string>("ProviderDisplayName")
+                        .HasColumnType("text")
+                        .HasColumnName("provider_display_name");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("LoginProvider", "ProviderKey");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("AspNetUserLogins", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<System.Guid>", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("RoleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("role_id");
+
+                    b.HasKey("UserId", "RoleId");
+
+                    b.HasIndex("RoleId");
+
+                    b.ToTable("AspNetUserRoles", (string)null);
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<System.Guid>", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("LoginProvider")
+                        .HasColumnType("text")
+                        .HasColumnName("login_provider");
+
+                    b.Property<string>("Name")
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Value")
+                        .HasColumnType("text")
+                        .HasColumnName("value");
+
+                    b.HasKey("UserId", "LoginProvider", "Name");
+
+                    b.ToTable("AspNetUserTokens", (string)null);
+                });
+
             modelBuilder.Entity("DataFlow.Domain.Entities.Customer", b =>
                 {
                     b.HasOne("DataFlow.Domain.Entities.DataSource", null)
@@ -509,6 +989,14 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("DataFlow.Domain.Entities.DataSource", b =>
+                {
+                    b.HasOne("DataFlow.Domain.Entities.RuleSetVersion", null)
+                        .WithMany()
+                        .HasForeignKey("DefaultRuleSetVersionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("DataFlow.Domain.Entities.ImportJob", b =>
                 {
                     b.HasOne("DataFlow.Domain.Entities.DataSource", null)
@@ -516,6 +1004,12 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .HasForeignKey("DataSourceId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("DataFlow.Domain.Entities.RuleSetVersion", null)
+                        .WithMany()
+                        .HasForeignKey("RuleSetVersionId", "RuleDocumentId")
+                        .HasPrincipalKey("Id", "RuleDocumentId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("DataFlow.Domain.Entities.ImportRow", b =>
@@ -536,6 +1030,44 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("DataFlow.Domain.Entities.RuleSetVersion", b =>
+                {
+                    b.HasOne("DataFlow.Domain.Entities.RuleSetVersion", null)
+                        .WithMany()
+                        .HasForeignKey("BasedOnVersionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DataFlow.Domain.Entities.RuleDocument", null)
+                        .WithMany()
+                        .HasForeignKey("RuleDocumentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DataFlow.Domain.Entities.RuleSet", null)
+                        .WithMany()
+                        .HasForeignKey("RuleSetId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.RuleVersionGrant", b =>
+                {
+                    b.HasOne("DataFlow.Domain.Entities.RuleSetVersion", null)
+                        .WithMany()
+                        .HasForeignKey("RuleSetVersionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.RuleVersionPublication", b =>
+                {
+                    b.HasOne("DataFlow.Domain.Entities.RuleSetVersion", null)
+                        .WithMany()
+                        .HasForeignKey("RuleSetVersionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("DataFlow.Domain.Entities.UploadRequest", b =>
                 {
                     b.HasOne("DataFlow.Domain.Entities.DataSource", null)
@@ -548,6 +1080,66 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("JobId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.UserRuleLibraryEntry", b =>
+                {
+                    b.HasOne("DataFlow.Domain.Entities.RuleSetVersion", null)
+                        .WithMany()
+                        .HasForeignKey("RuleSetVersionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
+                {
+                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole<System.Guid>", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<System.Guid>", b =>
+                {
+                    b.HasOne("DataFlow.Infrastructure.Persistence.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<System.Guid>", b =>
+                {
+                    b.HasOne("DataFlow.Infrastructure.Persistence.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<System.Guid>", b =>
+                {
+                    b.HasOne("Microsoft.AspNetCore.Identity.IdentityRole<System.Guid>", null)
+                        .WithMany()
+                        .HasForeignKey("RoleId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("DataFlow.Infrastructure.Persistence.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<System.Guid>", b =>
+                {
+                    b.HasOne("DataFlow.Infrastructure.Persistence.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }

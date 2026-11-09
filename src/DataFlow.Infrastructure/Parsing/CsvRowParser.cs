@@ -140,7 +140,7 @@ public sealed class CsvRowParser(IOptions<ImportProcessingOptions> options) : IC
         }
 
         var expected = schema.Fields.Select(field => field.Name).ToHashSet(StringComparer.Ordinal);
-        if (headers.Any(name => !expected.Contains(name)))
+        if (!schema.AllowUnknownColumns && headers.Any(name => !expected.Contains(name)))
         {
             throw new ImportFileException("unknown_csv_header", "The CSV header contains an unknown column.", 1);
         }

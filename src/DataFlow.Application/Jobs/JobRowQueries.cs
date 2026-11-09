@@ -25,11 +25,12 @@ public sealed class ListJobRowsValidator : AbstractValidator<ListJobRowsQuery>
     }
 }
 
-public sealed class JobRowQueries(IDataFlowDbContext database) : IQueryHandler<ListJobRowsQuery, PagedResult<JobRowDto>>
+public sealed class JobRowQueries(IDataFlowDbContext database, ICurrentUser currentUser) : IQueryHandler<ListJobRowsQuery, PagedResult<JobRowDto>>
 {
     public async Task<PagedResult<JobRowDto>> HandleAsync(ListJobRowsQuery request, CancellationToken cancellationToken)
     {
-        if (!await database.ImportJobs.AnyAsync(x => x.Id == request.JobId, cancellationToken))
+        if (!await database.ImportJobs.AnyAsync(x => x.Id == request.JobId &&
+            database.DataSources.Any(s => s.Id == x.DataSourceId && s.OwnerUserId == currentUser.UserId), cancellationToken))
         {
             throw new DomainException("job_not_found", "Job was not found.");
         }

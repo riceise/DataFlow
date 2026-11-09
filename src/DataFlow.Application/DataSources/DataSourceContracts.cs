@@ -38,7 +38,8 @@ public sealed record DataSourceDto(
     int SchemaVersion,
     bool IsActive,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? DefaultRuleSetVersionId = null);
 
 public sealed record DataSourceSchemaDto(
     int Version,

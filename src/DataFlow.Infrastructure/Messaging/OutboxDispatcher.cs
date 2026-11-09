@@ -46,7 +46,7 @@ public sealed class OutboxDispatcher(
                             session ??= await RabbitMqSession.ConnectAsync(rabbitOptions.Value, publisher: true, stoppingToken);
                             using var publishTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                             publishTimeout.CancelAfter(TimeSpan.FromSeconds(5));
-                            await session.Channel.BasicPublishAsync(RabbitMqSession.Exchange, RabbitMqSession.RoutingKey, mandatory: true,
+                            await session.Channel.BasicPublishAsync(RabbitMqSession.Exchange, ImportRecoveryMessage.Route(envelope), mandatory: true,
                                 new BasicProperties { Persistent = true, ContentType = "application/json", MessageId = message.Id.ToString(), Type = message.Type },
                                 JsonSerializer.SerializeToUtf8Bytes(envelope, ImportMessageEnvelope.JsonOptions), publishTimeout.Token);
                             var updated = await store.MarkPublishedAsync(message.Id, _owner, stoppingToken);

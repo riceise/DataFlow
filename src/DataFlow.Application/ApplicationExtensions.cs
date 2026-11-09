@@ -1,3 +1,4 @@
+using DataFlow.Application.Dashboard;
 using DataFlow.Application.DataSources;
 using DataFlow.Application.Dispatching;
 using DataFlow.Application.Jobs;
@@ -17,6 +18,8 @@ public static class ApplicationExtensions
         services.AddScoped<IValidator<ListJobsQuery>, ListJobsValidator>();
         services.AddScoped<IRequestHandler<ListJobRowsQuery, PagedResult<JobRowDto>>, JobRowQueries>();
         services.AddScoped<IValidator<ListJobRowsQuery>, ListJobRowsValidator>();
+        services.AddScoped<IRequestHandler<GetDashboardSummaryQuery, DashboardSummaryDto>, DashboardQueries>();
+        services.AddScoped<IValidator<GetDashboardSummaryQuery>, GetDashboardSummaryValidator>();
         services.AddScoped<DataSourceHandlers>();
         services.AddScoped<IRequestHandler<CreateDataSourceCommand, DataSourceDto>>(provider => provider.GetRequiredService<DataSourceHandlers>());
         services.AddScoped<IRequestHandler<UpdateDataSourceCommand, DataSourceDto>>(provider => provider.GetRequiredService<DataSourceHandlers>());

@@ -20,7 +20,8 @@ public sealed record ImportMessageEnvelope(
 
     public static ImportMessageEnvelope Create(ClaimedOutbox message) => new(
         SupportedVersion, message.Id, message.Type, message.OccurredAt.ToUniversalTime(),
-        message.Attempts + 1, Activity.Current?.Id ?? string.Empty,
+        JsonSerializer.Deserialize<JsonElement>(message.Payload, JsonOptions).TryGetProperty("attempt", out var attempt)
+            ? attempt.GetInt32() : 1, Activity.Current?.Id ?? string.Empty,
         JsonSerializer.Deserialize<JsonElement>(message.Payload, JsonOptions));
 
     private static JsonSerializerOptions CreateJsonOptions()

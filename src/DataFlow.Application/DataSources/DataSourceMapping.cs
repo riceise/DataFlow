@@ -46,6 +46,6 @@ internal static class DataSourceMapping
         return new DataSourceDto(source.Id, source.Name, source.DataType.ToString(), formats,
             new DataSourceSchemaDto(schema.Version, schema.KeyFields, schema.CsvDelimiter,
                 schema.Fields.Select(field => new DataSourceFieldDto(field.Name, field.Type, field.Required, field.MaxLength, field.Format)).ToArray()),
-            source.SchemaVersion, source.IsActive, source.CreatedAt, source.UpdatedAt);
+            source.SchemaVersion, source.IsActive, source.CreatedAt, source.UpdatedAt, source.DefaultRuleSetVersionId);
     }
 }

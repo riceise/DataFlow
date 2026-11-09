@@ -36,8 +36,20 @@ public sealed class RabbitMqFixture : IAsyncLifetime
         Password = "dataflow_test_password"
     };
 
-    public Task InitializeAsync() => _rabbit.StartAsync();
+    public async Task InitializeAsync()
+    {
+        await _rabbit.StartAsync();
+        var result = await _rabbit.ExecAsync(["rabbitmqctl", "set_policy", "--apply-to", "quorum_queues",
+            "dataflow-retry", "^imports\\.retry\\.", "{\"dead-letter-strategy\":\"at-least-once\",\"overflow\":\"reject-publish\"}"]);
+        Assert.Equal(0, result.ExitCode);
+    }
     public Task DisposeAsync() => _rabbit.DisposeAsync().AsTask();
+    public async Task<string> DiagnosticsAsync()
+    {
+        var queues = await _rabbit.ExecAsync(["rabbitmqctl", "list_queues", "name", "messages", "arguments", "policy", "effective_policy_definition"]);
+        var logs = await _rabbit.GetLogsAsync();
+        return queues.Stdout + logs.Stdout + logs.Stderr;
+    }
 }
 
 public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMqFixture rabbit) :
@@ -72,7 +84,7 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
         await observer.Channel.QueueDeclarePassiveAsync(RabbitMqSession.Queue);
         await observer.Channel.ExchangeDeclareAsync(RabbitMqSession.Exchange, ExchangeType.Direct, true, false);
         await observer.Channel.QueueDeclareAsync(RabbitMqSession.Queue, true, false, false,
-            new Dictionary<string, object?> { ["x-queue-type"] = "quorum" });
+            new Dictionary<string, object?> { ["x-queue-type"] = "quorum", ["x-consumer-timeout"] = 1_800_000 });
         var received = new ConcurrentQueue<(ImportMessageEnvelope Envelope, bool Persistent, DeliveryModes DeliveryMode)>();
         var consumer = new AsyncEventingBasicConsumer(observer.Channel);
         consumer.ReceivedAsync += async (_, delivery) =>
@@ -161,7 +173,7 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
         var delivery = await session.Channel.BasicGetAsync(RabbitMqSession.Queue, true);
         Assert.NotNull(delivery);
         var envelope = JsonSerializer.Deserialize<ImportMessageEnvelope>(delivery.Body.Span, ImportMessageEnvelope.JsonOptions)!;
-        Assert.Equal(stored.Attempts + 1, envelope.Attempt);
+        Assert.Equal(1, envelope.Attempt);
     }
 
     [Fact]
@@ -296,7 +308,49 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
         await transaction.RollbackAsync();
     }
 
-    private IHost CreateHost(bool dispatcher, RabbitMqOptions? options = null)
+    [Theory]
+    [InlineData(1)]
+    [InlineData(4)]
+    public async Task Stage8_ConsumerFailureCommitsBeforeAck_AndDispatcherRoutesRetryOrDead(int attempt)
+    {
+        var (job, _) = await SeedAsync();
+        await using (var database = postgres.CreateContext())
+        {
+            await database.OutboxMessages.ExecuteDeleteAsync();
+            database.OutboxMessages.Add(ImportRecoveryMessage.Create(job, attempt, DateTimeOffset.UtcNow, dead: attempt == 4));
+            // Publish the input directly; this outbox is only the durable attempt guard.
+            await database.SaveChangesAsync();
+            await database.OutboxMessages.ExecuteUpdateAsync(setters => setters.SetProperty(x => x.PublishedAt, DateTimeOffset.UtcNow));
+        }
+        using var consumer = CreateHost(false, failStorage: true);
+        await consumer.StartAsync();
+        var input = ImportRecoveryMessage.Create(job, attempt, DateTimeOffset.UtcNow);
+        await PublishAsync(Envelope(input));
+        await WaitAsync(() => Task.FromResult(_log.Messages.Any(x => x == "Import delivery acknowledged")));
+        await consumer.StopAsync();
+        await using (var database = postgres.CreateContext())
+        {
+            var current = await database.ImportJobs.SingleAsync(x => x.Id == job.Id);
+            Assert.Equal(attempt == 1 ? ImportJobStatus.RetryScheduled : ImportJobStatus.Failed, current.Status);
+            Assert.True(await database.ProcessedMessages.AnyAsync(x => x.MessageId == input.Id.ToString()));
+        }
+        using var dispatcher = CreateHost(true);
+        await dispatcher.StartAsync();
+        await using var observer = await RabbitMqSession.ConnectAsync(rabbit.Options, false, default);
+        var queue = attempt == 1 ? "imports.retry.5" : ImportRecoveryMessage.Dead;
+        await WaitAsync(async () => (await observer.Channel.QueueDeclarePassiveAsync(queue)).MessageCount > 0);
+        var delivery = await observer.Channel.BasicGetAsync(queue, true);
+        var envelope = JsonSerializer.Deserialize<ImportMessageEnvelope>(delivery!.Body.Span, ImportMessageEnvelope.JsonOptions)!;
+        Assert.Equal(attempt == 1 ? 2 : 4, envelope.Attempt);
+        await dispatcher.StopAsync();
+    }
+
+    private sealed class FailingFileReader : IImportFileReader
+    {
+        public Task<Stream> OpenReadAsync(string storageKey, CancellationToken cancellationToken) => throw new IOException("Injected storage outage");
+    }
+
+    private IHost CreateHost(bool dispatcher, RabbitMqOptions? options = null, bool failStorage = false)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -312,6 +366,7 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
         builder.Services.AddScoped<CsvImportProcessor>();
         builder.Services.AddScoped<ICsvRowParser, CsvRowParser>();
         builder.Services.AddSingleton<IImportFileReader, TestFileReader>();
+        if (failStorage) { builder.Services.AddSingleton<IImportFileReader, FailingFileReader>(); }
         if (dispatcher)
         {
             builder.Services.AddHostedService<OutboxDispatcher>();

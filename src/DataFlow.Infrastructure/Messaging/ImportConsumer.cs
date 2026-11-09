@@ -130,20 +130,16 @@ public sealed class ImportConsumer(
             return;
         }
 
+        if (envelope.Attempt is < 1 or > 4) { logger.LogError("Invalid import attempt"); return; }
         var processor = scope.ServiceProvider.GetRequiredService<CsvImportProcessor>();
-        while (true)
+        try
         {
-            try
-            {
-                await processor.ProcessAsync(payload.JobId, payload.RunVersion, envelope.MessageId, _owner, cancellationToken);
-                return;
-            }
-            catch (ImportLeaseUnavailableException)
-            {
-                // Keep the delivery unacked without a hot nack/requeue loop. A fresh
-                // attempt rechecks terminal/run guards before attempting takeover.
-                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-            }
+            await processor.ProcessAsync(payload.JobId, payload.RunVersion, envelope.MessageId, _owner, cancellationToken, envelope.Attempt);
+        }
+        catch (ImportLeaseUnavailableException)
+        {
+            // The live owner or reconciliation owns recovery; do not hold a delivery beyond ack timeout.
+            logger.LogInformation("Import ownership unavailable; recovery delegated to reconciliation");
         }
     }
 }

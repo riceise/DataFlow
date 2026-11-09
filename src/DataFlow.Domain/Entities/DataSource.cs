@@ -35,6 +35,34 @@ public sealed class DataSource
     }
 
     public Guid Id { get; private set; }
+    public Guid? OwnerUserId { get; private set; }
+    public Guid? DefaultRuleSetVersionId { get; private set; }
+    public void SelectRules(Guid versionId, DataSourceDataType type)
+    {
+        if (versionId == Guid.Empty)
+        {
+            throw new DomainException("rule_version_not_found", "Version is required.");
+        }
+
+        if (DefaultRuleSetVersionId is not null && DataType != type)
+        {
+            throw new DomainException("rule_type_mismatch", "Source type cannot change.");
+        }
+
+        DefaultRuleSetVersionId = versionId;
+        DataType = type;
+        UpdatedAt = PersistenceTime.ToStoragePrecision(DateTimeOffset.UtcNow);
+    }
+
+    public void AssignOwner(Guid userId)
+    {
+        if (userId == Guid.Empty || (OwnerUserId is not null && OwnerUserId != userId))
+        {
+            throw new DomainException("invalid_source_owner", "A source requires a permanent owner.");
+        }
+
+        OwnerUserId = userId;
+    }
     public string Name { get; private set; }
     public DataSourceDataType DataType { get; private set; }
     public AcceptedFileFormat AcceptedFormats { get; private set; }

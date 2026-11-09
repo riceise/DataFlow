@@ -9,6 +9,7 @@ public static class DataSourceEndpoints
     public static IEndpointRouteBuilder MapDataSourceEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/v1/data-sources").WithTags("Data sources")
+            .RequireAuthorization()
             .ProducesProblem(StatusCodes.Status400BadRequest);
 
         group.MapPost("", async Task<Created<DataSourceDto>> (

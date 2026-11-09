@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using DataFlow.Application.Abstractions;
+using DataFlow.Application.Dashboard;
 using DataFlow.Application.DataSources;
 using DataFlow.Application.Dispatching;
 using DataFlow.Application.Jobs;
@@ -17,18 +19,41 @@ public static class FileEndpoints
 {
     public static IEndpointRouteBuilder MapFileEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapPost("/api/v1/data-sources/{id:guid}/files", UploadAsync)
+        var secured = endpoints.MapGroup("").RequireAuthorization();
+        secured.MapPost("/api/v1/data-sources/{id:guid}/files", UploadAsync)
             .WithTags("Files").Produces<JobAcceptedDto>(202).ProducesProblem(400).ProducesProblem(404).ProducesProblem(409);
-        endpoints.MapGet("/api/v1/data-sources/{id:guid}/jobs", async (Guid id, IDispatcher dispatcher,
+        secured.MapGet("/api/v1/data-sources/{id:guid}/jobs", async (Guid id, IDispatcher dispatcher,
             CancellationToken ct, int page = 1, int pageSize = 50, string? status = null) =>
             Results.Ok(await dispatcher.DispatchAsync<ListJobsQuery, PagedResult<JobDto>>(new(id, page, pageSize, status), ct)));
-        endpoints.MapGet("/api/v1/jobs/{id:guid}", async (Guid id, IDispatcher dispatcher, CancellationToken ct) =>
+        secured.MapGet("/api/v1/jobs/{id:guid}", async (Guid id, IDispatcher dispatcher, CancellationToken ct) =>
             Results.Ok(await dispatcher.DispatchAsync<GetJobQuery, JobDto>(new(id), ct)));
-        endpoints.MapGet("/api/v1/import-jobs/{id:guid}/rows", async (Guid id, IDispatcher dispatcher,
+        secured.MapGet("/api/v1/import-jobs/{id:guid}/rows", async (Guid id, IDispatcher dispatcher,
             CancellationToken ct, int page = 1, int pageSize = 50, string? status = null) =>
             Results.Ok(await dispatcher.DispatchAsync<ListJobRowsQuery, PagedResult<JobRowDto>>(new(id, page, pageSize, status), ct)))
             .WithTags("Import jobs").Produces<PagedResult<JobRowDto>>().ProducesProblem(400).ProducesProblem(404);
+        secured.MapGet("/api/v1/import-jobs/{id:guid}/errors.csv", StreamErrorsCsvAsync)
+            .WithTags("Import jobs").Produces(200, contentType: "text/csv").ProducesProblem(404);
+        secured.MapPost("/api/v1/import-jobs/{id:guid}/retry", async (Guid id, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Accepted($"/api/v1/jobs/{id}", await dispatcher.DispatchAsync<RetryJobCommand, JobAcceptedDto>(new(id), ct)))
+            .WithTags("Import jobs").Produces<JobAcceptedDto>(202).ProducesProblem(404).ProducesProblem(409);
+        secured.MapPost("/api/v1/import-jobs/{id:guid}/cancel", async (Guid id, IDispatcher dispatcher, CancellationToken ct) =>
+            Results.Accepted($"/api/v1/jobs/{id}", await dispatcher.DispatchAsync<CancelJobCommand, JobAcceptedDto>(new(id), ct)))
+            .WithTags("Import jobs").Produces<JobAcceptedDto>(202).ProducesProblem(404).ProducesProblem(409);
+        secured.MapGet("/api/v1/dashboard/summary", async (IDispatcher dispatcher, CancellationToken ct,
+            string period = "week", int recentLimit = 8) =>
+            Results.Ok(await dispatcher.DispatchAsync<GetDashboardSummaryQuery, DashboardSummaryDto>(new(period, recentLimit), ct)))
+            .WithTags("Dashboard").Produces<DashboardSummaryDto>().ProducesProblem(400);
         return endpoints;
+    }
+
+    private static async Task StreamErrorsCsvAsync(Guid id, HttpContext context, IDataFlowDbContext database, ICurrentUser currentUser)
+    {
+        var ct = context.RequestAborted;
+        await JobErrorReportWriter.VerifyJobAccessAsync(database, currentUser, id, ct);
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        context.Response.ContentType = "text/csv; charset=utf-8";
+        context.Response.Headers.ContentDisposition = $"attachment; filename=\"import-job-{id:N}-errors.csv\"";
+        await JobErrorReportWriter.WriteErrorsCsvAsync(database, id, context.Response.Body, ct);
     }
 
     private static async Task<IResult> UploadAsync(Guid id, HttpContext context, IDispatcher dispatcher, IOptions<StorageOptions> options)
@@ -143,7 +168,17 @@ public static class FileEndpoints
 
             ct.ThrowIfCancellationRequested();
             receiving = false;
-            var result = await dispatcher.DispatchAsync<UploadFileCommand, JobAcceptedDto>(new(id, header[0]!, temp, fileName, hash, format), ct);
+            Guid? versionId = null;
+            if (context.Request.Query.TryGetValue("ruleSetVersionId", out var version))
+            {
+                if (!Guid.TryParse(version, out var parsed))
+                {
+                    throw Error("invalid_rule_definition");
+                }
+
+                versionId = parsed;
+            }
+            var result = await dispatcher.DispatchAsync<UploadFileCommand, JobAcceptedDto>(new(id, header[0]!, temp, fileName, hash, format, versionId), ct);
             return Results.Accepted($"/api/v1/jobs/{result.JobId}", result);
         }
         catch (InvalidDataException) { throw Error("invalid_multipart"); }

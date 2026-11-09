@@ -21,6 +21,7 @@ builder.Services.AddDataFlowConfiguration(builder.Configuration);
 builder.Services.AddDataFlowPersistence();
 builder.Services.AddDataFlowStorage();
 builder.Services.AddDataFlowImportWorker();
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromSeconds(30));
 
 var host = builder.Build();
 await host.RunAsync();

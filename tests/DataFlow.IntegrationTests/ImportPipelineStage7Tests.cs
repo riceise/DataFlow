@@ -127,9 +127,8 @@ public sealed class ImportPipelineStage7Tests(DataSourcesApiFixture fixture) : I
         {
             await RunAsync(job, Guid.NewGuid(), Header + string.Concat(Enumerable.Range(1, 600).Select(Line)));
             var failed = await database.ImportJobs.SingleAsync(x => x.Id == job.Id);
-            Assert.Equal(ImportJobStatus.Failed, failed.Status);
-            Assert.Equal("import_infrastructure_error", failed.LastErrorCode);
-            Assert.Equal(1, failed.Retryable);
+            Assert.Equal(ImportJobStatus.RetryScheduled, failed.Status);
+            Assert.NotNull(failed.NextAttemptAt);
             Assert.Null(failed.TotalRows);
             Assert.Equal(500, failed.ProcessedRows);
             Assert.Equal(501, failed.LastCommittedRowNumber);
@@ -362,9 +361,8 @@ public sealed class ImportPipelineStage7Tests(DataSourcesApiFixture fixture) : I
         await CreateProcessor(database, new FileReader(() => throw new IOException("secret@example.test")))
             .ProcessAsync(job.Id, 1, Guid.NewGuid(), "worker", default);
         var failed = await database.ImportJobs.AsNoTracking().SingleAsync(x => x.Id == job.Id);
-        Assert.Equal(ImportJobStatus.Failed, failed.Status);
-        Assert.Equal("import_infrastructure_error", failed.LastErrorCode);
-        Assert.Equal(1, failed.Retryable);
+        Assert.Equal(ImportJobStatus.RetryScheduled, failed.Status);
+        Assert.NotNull(failed.NextAttemptAt);
         Assert.DoesNotContain("secret", failed.LastError);
         Assert.Single(await database.ProcessedMessages.Where(x => x.JobId == job.Id).ToListAsync());
     }
@@ -380,6 +378,48 @@ public sealed class ImportPipelineStage7Tests(DataSourcesApiFixture fixture) : I
             .ProcessAsync(job.Id, 1, Guid.NewGuid(), "worker", cancellation.Token));
         Assert.Empty(await database.ProcessedMessages.Where(x => x.JobId == job.Id).ToListAsync());
         Assert.Equal(ImportJobStatus.Processing, (await database.ImportJobs.AsNoTracking().SingleAsync(x => x.Id == job.Id)).Status);
+    }
+
+    [Fact]
+    public async Task Stage8_AutomaticRetryResumesCommittedPrefixAndRestoresKnownKeys()
+    {
+        var job = await SeedAsync();
+        await using var database = fixture.CreateContext();
+        var store = new ImportJobStore(database);
+        var lease = (await store.AcquireAsync(job.Id, 1, "first", 60, default))!;
+        await store.CommitBatchAsync(lease, [BatchRow(job.DataSourceId, 2, "1")], 60, default);
+        await store.FinalizeAsync(lease, Guid.NewGuid(), null, "import_infrastructure_error", true, default);
+        await database.Database.ExecuteSqlInterpolatedAsync($"UPDATE import_jobs SET next_attempt_at = clock_timestamp() - interval '1 second' WHERE id = {job.Id}");
+        var csv = Header + Line(1) + Line(1) + Line(2);
+        await CreateProcessor(database, new FileReader(() => new MemoryStream(Encoding.UTF8.GetBytes(csv))))
+            .ProcessAsync(job.Id, 1, Guid.NewGuid(), "retry", default, 2);
+        var result = await database.ImportJobs.AsNoTracking().SingleAsync(x => x.Id == job.Id);
+        Assert.Equal(ImportJobStatus.CompletedWithErrors, result.Status);
+        Assert.Equal(2, result.InsertedRows);
+        Assert.Equal(1, result.InvalidRows);
+        Assert.Equal(3, result.ProcessedRows);
+        Assert.Equal(2, await database.Customers.CountAsync(x => x.DataSourceId == job.DataSourceId));
+    }
+
+    [Fact]
+    public async Task Stage8_CancelDuringStreamingStopsBeforeNextBatchAndPreservesRows()
+    {
+        var job = await SeedAsync();
+        var parser = new ObservingParser(new CsvRowParser(Options.Create(new ImportProcessingOptions())), async index =>
+        {
+            if (index != 501) { return; }
+            await using var observed = fixture.CreateContext();
+            var current = await observed.ImportJobs.SingleAsync(x => x.Id == job.Id);
+            current.RequestCancel();
+            await observed.SaveChangesAsync();
+        });
+        await RunAsync(job, Guid.NewGuid(), Header + string.Concat(Enumerable.Range(1, 1000).Select(Line)), parser);
+        await using var database = fixture.CreateContext();
+        var cancelled = await database.ImportJobs.SingleAsync(x => x.Id == job.Id);
+        Assert.Equal(ImportJobStatus.Cancelled, cancelled.Status);
+        Assert.Equal(500, cancelled.ProcessedRows);
+        Assert.Equal(500, await database.ImportRows.CountAsync(x => x.ImportJobId == job.Id));
+        Assert.Equal(500, await database.Customers.CountAsync(x => x.DataSourceId == job.DataSourceId));
     }
 
     private async Task<ImportJob> SeedAsync(Guid? sourceId = null)

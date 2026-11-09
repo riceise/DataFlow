@@ -1,7 +1,7 @@
 # DataFlow
 
 Платформа импорта, валидации и фоновой обработки данных.
-Реализован сквозной импорт CSV: API управления источниками и схемой Customer, потоковая загрузка в S3/MinIO, transactional outbox в PostgreSQL, доставка через RabbitMQ и обработка Worker с lease/fencing и транзакционными батчами. Результаты строк и ошибки доступны через API. Есть валидация конфигурации, структурированные JSON-логи, локальная инфраструктура Docker Compose и CI.
+Реализован сквозной импорт CSV и XLSX: API управления источниками и схемой Customer, библиотека пользовательских правил (Customer/Tabular), потоковая загрузка в S3/MinIO, transactional outbox в PostgreSQL, доставка через RabbitMQ и обработка Worker с lease/fencing и транзакционными батчами. Результаты строк и ошибки доступны через API и в виде потокового CSV-отчёта; агрегированные показатели — через Dashboard Summary. Есть валидация конфигурации, структурированные JSON-логи, локальная инфраструктура Docker Compose и CI.
 
 ## Требования
 
@@ -58,6 +58,18 @@ dotnet test DataFlow.sln --no-build
 ```
 
 ## Запуск приложений
+
+### Библиотека правил и исторические данные
+
+В `Ui/` доступен маршрут `/rules`: вход, загрузка JSON-правил, версии, каталог, обмен и запуск CSV-проверки. API использует cookie-аутентификацию; изменяющие запросы передают `X-CSRF-TOKEN`, полученный через `GET /api/v1/auth/antiforgery`.
+
+Для существующей БД после расширяющих migrations запустите перенос с явным UserId владельца:
+
+```powershell
+dotnet run --project tools/DataFlow.BackfillTool -- "<existing-user-guid>"
+```
+
+Порядок остановки приложений, назначения владельца и повторного запуска описан в [docs/rules-backfill.md](docs/rules-backfill.md). Фактический статус расширения — [RULES_IMPLEMENTATION.md](RULES_IMPLEMENTATION.md).
 
 ### Миграции PostgreSQL
 
@@ -174,6 +186,8 @@ CRLF, LF и CR поддерживаются. Завершающий перево
 | `MaxRows` | 50 000 | 1–500 000 записей данных, включая невалидные, без пустых строк |
 | `MaxColumns` | 64 | 1–256 |
 | `MaxCellLength` | 4 096 | 1–65 536 UTF-16 code units декодированной ячейки |
+| `MaxZipEntries` | 128 | 1–10 000 записей ZIP-архива (только XLSX) |
+| `MaxUncompressedBytes` | 100 МБ | 1 КиБ–512 МиБ суммарного распакованного объёма (только XLSX) |
 
 Лимиты колонок/ячеек применяются и к заголовку. Дополнительно ограничен сырой
 размер одной записи с учётом quoting: память парсера ограничена записью, а не
@@ -183,6 +197,71 @@ CRLF, LF и CR поддерживаются. Завершающий перево
 и quoting (`invalid_csv_syntax`) отклоняют файл через `ImportFileException` с
 безопасным сообщением. Внутренние диагностики CsvHelper и значения ячеек в
 исключения не включаются.
+
+### XLSX parser (этап 9)
+
+`IXlsxRowParser` / `XlsxRowParser` читает первый worksheet книги и выдаёт тот же
+`IAsyncEnumerable<ParsedRow>`, что и CSV-парсер: валидация строк не зависит от
+формата файла. Реализация — собственный потоковый разбор OOXML через
+`ZipArchive` + `XmlReader` (async, `DtdProcessing.Prohibit`, `XmlResolver = null`,
+запрет DTD/entities): формулы и внешние ссылки никогда не исполняются.
+
+Гарантии безопасности XLSX:
+
+- Лимит числа ZIP-записей (`MaxZipEntries`) и суммарного распакованного объёма
+  (`MaxUncompressedBytes`). Объём проверяется и по заявленным размерам записей,
+  и фактически при чтении каждого потока — zip-bomb с поддельными заголовками
+  отклоняется.
+- Формулы (`<f>`) не вычисляются: значение из кеша игнорируется, ячейка даёт
+  ошибку строки `formula_cell_not_supported`. Формула или ошибка Excel в строке
+  заголовка отклоняет файл целиком (`invalid_xlsx_header`).
+- Ошибочные значения Excel (`t="e"`, например `#DIV/0!`, `#VALUE!`) и
+  неподдерживаемые типы делают строку `Invalid` с `unsupported_cell_value`,
+  обработка файла продолжается.
+- Первая worksheet выбирается по `xl/workbook.xml` и её relationships; вложенные
+  пути нормализуются (защита от `../` traversal).
+
+Семантика значений согласована с CSV: shared/inline строки — текст,
+`t="b"` → `true`/`false`, `t="d"` и числовые serial-даты со стилем даты →
+`yyyy-MM-dd`, числа → invariant decimal (`G29`). Пустые физические строки
+выдаются с `IsEmpty=true` и продвигают checkpoint; явные пустые ячейки являются
+данными и проверяются на required. Заголовок — первая строка первого листа:
+пустые/повторные (без учёта регистра)/неизвестные/отсутствующие имена отклоняют
+файл кодами `empty_csv_header`, `duplicate_csv_header`, `unknown_csv_header`,
+`missing_csv_header`. Лимиты `MaxRows`/`MaxColumns`/`MaxCellLength` применяются
+так же, как в CSV; лишние колонки дают ошибку строки `column_count_mismatch`.
+
+Эквивалентные CSV и XLSX дают одинаковые `NaturalKey`, `RowHash`, статусы строк
+и ошибки — это закреплено интеграционными тестами этапа 9.
+
+### CSV-отчёт ошибок и Dashboard
+
+`GET /api/v1/import-jobs/{id}/errors.csv` отдаёт потоковый отчёт по невалидным
+строкам (RFC 4180, `\r\n`, `rowNumber,field,code,message,rawData`). Значения
+текстовых ячеек, начинающихся с `=`, `+`, `-`, `@`, `\t`, `\r` (в том числе
+после ведущих пробелов), предваряются апострофом — защита от spreadsheet
+formula injection. `rawData` — JSON-массив исходных ячеек с экранированием
+каждого строкового элемента. Доступ только владельцу источника; неизвестное
+задание — 404 `job_not_found`.
+
+`GET /api/v1/dashboard/summary?period=today|week|month|all&recentLimit=1..50`
+возвращает агрегаты по заданиям текущего пользователя. Определения показателей:
+
+- `totalJobs` — задания, созданные за период (`CreatedAt`);
+- `completedJobs` / `completedWithErrorsJobs` — терминальные статусы полного
+  разбора файла (без ошибок строк / с ними);
+- `failedJobs`, `cancelledJobs` — сбои обработки и отменённые задания;
+- `attentionJobs` = `completedWithErrorsJobs + failedJobs`;
+- `activeJobs` = `queuedJobs + processingJobs`, где `queuedJobs` — `Queued` и
+  `RetryScheduled`, `processingJobs` — `Processing`;
+- `completionSuccessRate` — доля полностью разобранных файлов среди завершённых
+  и упавших: `(completed + completedWithErrors) / (completed + completedWithErrors + failed) * 100`,
+  0, если таких нет;
+- `processedRows` = `insertedRows + updatedRows + invalidRows + duplicateRows + validRows`;
+- `validRows` — валидные строки универсальных пользовательских правил (Tabular);
+- `acceptedRows` = `insertedRows + updatedRows + duplicateRows + validRows`;
+- `recentJobs` — последние задания периода с именем источника, файлом, форматом
+  (CSV/XLSX по расширению), статусом и счётчиками.
 
 ### Сквозной импорт CSV
 
@@ -217,10 +296,9 @@ Duplicate; повтор ключа внутри файла — Invalid `duplicat
 проверяет полный путь API → S3 → outbox → RabbitMQ → Worker → API при батчах 250 и 500,
 результат каждой строки, повтор доставки и HTTP idempotency.
 
-Ограничения: нет фонового heartbeat, retry-очередей/DLQ, reconciliation и retry/cancel API
-(этап 8). Очень медленное чтение может привести к потере lease. При отказе файла ранее
-закоммиченные батчи сохраняются: атомарность — на уровне батча. XLSX, экспорт ошибок
-и Dashboard — этап 9; пока Worker обрабатывает только CSV.
+Ограничения: при отказе файла ранее закоммиченные батчи сохраняются: атомарность —
+на уровне батча. Экспорт ошибок и Dashboard доступны, но их UI-интеграция в
+`Ui/` ограничена страницей правил; полноценный операторский интерфейс — этап 10.
 
 ## Структура
 

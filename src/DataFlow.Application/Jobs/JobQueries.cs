@@ -9,20 +9,22 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DataFlow.Application.Jobs;
 
-public sealed class JobQueries(IDataFlowDbContext database) :
+public sealed class JobQueries(IDataFlowDbContext database, ICurrentUser currentUser) :
     IQueryHandler<GetJobQuery, JobDto>, IQueryHandler<ListJobsQuery, PagedResult<JobDto>>
 {
     private static readonly Expression<Func<ImportJob, JobDto>> Projection = job => new JobDto(
         job.Id, job.DataSourceId, job.Status.ToString(), job.SchemaVersion, job.CreatedAt, job.StartedAt,
-        job.CompletedAt, job.TotalRows, job.ProcessedRows, job.InsertedRows, job.UpdatedRows, job.InvalidRows, job.DuplicateRows);
+        job.CompletedAt, job.TotalRows, job.ProcessedRows, job.InsertedRows, job.UpdatedRows, job.InvalidRows, job.DuplicateRows,
+        job.ValidRows, job.RuleSetVersionId, job.RuleSetNameAtSubmission, job.RuleVersionNumberAtSubmission);
 
     public async Task<JobDto> HandleAsync(GetJobQuery request, CancellationToken cancellationToken) =>
-        await database.ImportJobs.AsNoTracking().Where(x => x.Id == request.Id).Select(Projection)
+        await database.ImportJobs.AsNoTracking().Where(x => x.Id == request.Id &&
+            database.DataSources.Any(s => s.Id == x.DataSourceId && s.OwnerUserId == currentUser.UserId)).Select(Projection)
             .SingleOrDefaultAsync(cancellationToken) ?? throw new DomainException("job_not_found", "Job was not found.");
 
     public async Task<PagedResult<JobDto>> HandleAsync(ListJobsQuery request, CancellationToken cancellationToken)
     {
-        if (!await database.DataSources.AnyAsync(x => x.Id == request.DataSourceId, cancellationToken))
+        if (!await database.DataSources.AnyAsync(x => x.Id == request.DataSourceId && x.OwnerUserId == currentUser.UserId, cancellationToken))
         {
             throw new DomainException("source_not_found", "Data source was not found.");
         }

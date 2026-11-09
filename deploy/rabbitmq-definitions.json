@@ -1,0 +1,15 @@
+{
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "dataflow-retry",
+      "pattern": "^imports\\.retry\\.",
+      "apply-to": "quorum_queues",
+      "priority": 10,
+      "definition": {
+        "dead-letter-strategy": "at-least-once",
+        "overflow": "reject-publish"
+      }
+    }
+  ]
+}

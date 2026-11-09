@@ -43,8 +43,26 @@ public sealed class RabbitMqSession : IAsyncDisposable
                 cancellationToken);
             await channel.ExchangeDeclareAsync(Exchange, ExchangeType.Direct, durable: true, autoDelete: false, cancellationToken: cancellationToken);
             await channel.QueueDeclareAsync(Queue, durable: true, exclusive: false, autoDelete: false,
-                arguments: new Dictionary<string, object?> { ["x-queue-type"] = "quorum" }, cancellationToken: cancellationToken);
+                arguments: new Dictionary<string, object?> { ["x-queue-type"] = "quorum", ["x-consumer-timeout"] = 1_800_000 }, cancellationToken: cancellationToken);
             await channel.QueueBindAsync(Queue, Exchange, RoutingKey, cancellationToken: cancellationToken);
+            await channel.QueueDeclareAsync(ImportRecoveryMessage.Dead, true, false, false,
+                new Dictionary<string, object?> { ["x-queue-type"] = "quorum" }, cancellationToken: cancellationToken);
+            await channel.QueueBindAsync(ImportRecoveryMessage.Dead, Exchange, ImportRecoveryMessage.Dead, cancellationToken: cancellationToken);
+            foreach (var seconds in ImportRecoveryMessage.Delays)
+            {
+                var name = $"imports.retry.{seconds}";
+                await channel.QueueDeclareAsync(name, true, false, false, new Dictionary<string, object?>
+                {
+                    ["x-queue-type"] = "quorum",
+                    ["x-message-ttl"] = seconds * 1000,
+                    ["x-max-length"] = 10000,
+                    ["x-dead-letter-exchange"] = Exchange,
+                    ["x-dead-letter-routing-key"] = RoutingKey,
+                    ["x-dead-letter-strategy"] = "at-least-once",
+                    ["x-overflow"] = "reject-publish"
+                }, cancellationToken: cancellationToken);
+                await channel.QueueBindAsync(name, Exchange, name, cancellationToken: cancellationToken);
+            }
             return new RabbitMqSession(connection, channel);
         }
         catch

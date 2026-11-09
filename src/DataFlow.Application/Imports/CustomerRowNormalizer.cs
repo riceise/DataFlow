@@ -61,7 +61,8 @@ public sealed class CustomerRowNormalizer
             values.Add(field.Name, value);
             if (value is null)
             {
-                if (field.Required || _schema.KeyFields.Contains(field.Name, StringComparer.Ordinal))
+                if ((field.Required || _schema.KeyFields.Contains(field.Name, StringComparer.Ordinal)) &&
+                    !errors.Any(e => e.Field == field.Name))
                 {
                     errors.Add(new(field.Name, "required", "A value is required."));
                 }
@@ -131,7 +132,8 @@ public sealed record CustomerRowValidation(
     string? NaturalKey,
     string? RowHash,
     IReadOnlyList<ImportRowError> Errors,
-    bool IsEmpty)
+    bool IsEmpty,
+    bool IsTabular = false)
 {
-    public bool IsValid => !IsEmpty && Customer is not null && Errors.Count == 0;
+    public bool IsValid => !IsEmpty && (Customer is not null || IsTabular) && Errors.Count == 0;
 }

@@ -105,6 +105,7 @@ function onDrop(event: DragEvent) {
 <template>
   <a class="skip-link" href="#main-content">Перейти к содержимому</a>
   <div class="app-layout">
+    <RouterLink to="/rules" style="position: fixed; right: 1rem; bottom: 1rem; z-index: 20; background: #233047; color: white; padding: .8rem 1rem; border-radius: 8px">Мои правила →</RouterLink>
     <aside class="sidebar" aria-label="Боковая панель">
       <a href="/" class="brand" aria-label="DataFlow — главная">
         <span class="brand-mark"

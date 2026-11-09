@@ -2,7 +2,8 @@ namespace DataFlow.Domain.Enums;
 
 public enum DataSourceDataType
 {
-    Customer = 1
+    Customer = 1,
+    Tabular = 2
 }
 
 [Flags]
@@ -32,5 +33,6 @@ public enum ImportRowStatus
     Inserted = 1,
     Updated = 2,
     Invalid = 3,
-    Duplicate = 4
+    Duplicate = 4,
+    Valid = 5
 }

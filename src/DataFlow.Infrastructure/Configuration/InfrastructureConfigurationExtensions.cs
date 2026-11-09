@@ -43,6 +43,7 @@ public static class InfrastructureConfigurationExtensions
             .AddOptions<ImportProcessingOptions>()
             .Bind(configuration.GetSection(ImportProcessingOptions.SectionName))
             .ValidateDataAnnotations()
+            .Validate(options => options.HeartbeatSeconds < options.LeaseSeconds, "Heartbeat must be shorter than the lease.")
             .ValidateOnStart();
 
         return services;

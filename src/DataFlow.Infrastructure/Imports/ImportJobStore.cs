@@ -2,6 +2,7 @@ using System.Text.Json;
 using DataFlow.Application.Imports;
 using DataFlow.Domain.Entities;
 using DataFlow.Domain.Enums;
+using DataFlow.Infrastructure.Messaging;
 using DataFlow.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -12,7 +13,19 @@ public sealed record ImportBatchRow(ParsedRow Parsed, CustomerRowValidation Vali
 
 public sealed class ImportJobStore(DataFlowDbContext database)
 {
-    public async Task<ImportLease?> AcquireAsync(Guid jobId, int runVersion, string owner, int leaseSeconds, CancellationToken cancellationToken)
+    public async Task<bool> RenewAsync(ImportLease lease, int leaseSeconds, CancellationToken cancellationToken) =>
+        await database.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE import_jobs SET lease_until = clock_timestamp() + make_interval(secs => {leaseSeconds}),
+                updated_at = clock_timestamp()
+            WHERE id = {lease.JobId} AND run_version = {lease.RunVersion} AND status = 2
+                AND lease_owner = {lease.Owner} AND lease_version = {lease.Version}
+                AND lease_until > clock_timestamp()
+            """, cancellationToken) == 1;
+
+    public Task<bool> CancellationRequestedAsync(ImportLease lease, CancellationToken cancellationToken) =>
+        database.ImportJobs.AsNoTracking().AnyAsync(x => x.Id == lease.JobId && x.CancelRequested, cancellationToken);
+
+    public async Task<ImportLease?> AcquireAsync(Guid jobId, int runVersion, string owner, int leaseSeconds, CancellationToken cancellationToken, int attempt = 1)
     {
         var versions = await database.Database.SqlQuery<int>($"""
             UPDATE import_jobs SET lease_owner = {owner}, lease_version = lease_version + 1,
@@ -20,6 +33,9 @@ public sealed class ImportJobStore(DataFlowDbContext database)
                 next_attempt_at = NULL, started_at = COALESCE(started_at, clock_timestamp()),
                 attempt_count = attempt_count + 1, updated_at = clock_timestamp()
             WHERE id = {jobId} AND run_version = {runVersion} AND
+                NOT EXISTS (SELECT 1 FROM outbox_messages o WHERE o.type = 'import.job.created'
+                    AND o.payload->>'jobId' = {jobId.ToString()} AND o.payload->>'runVersion' = {runVersion.ToString()}
+                    AND COALESCE((o.payload->>'attempt')::int, 1) > {attempt}) AND
                 (status = 1 OR (status = 3 AND (next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()))
                  OR (status = 2 AND lease_until <= clock_timestamp()))
             RETURNING lease_version AS "Value"
@@ -33,14 +49,15 @@ public sealed class ImportJobStore(DataFlowDbContext database)
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
         await SetTimeoutsAsync(cancellationToken);
         var job = await LockAsync(lease, cancellationToken);
+        if (job.CancelRequested) { throw new ImportCancellationRequestedException(); }
         var deadline = job.LeaseUntil!.Value;
         var processedAt = await NowAsync(cancellationToken);
-        var counts = new int[5];
+        var counts = new int[6];
         foreach (var row in rows)
         {
             if (row.Validation.IsEmpty) { continue; }
             var status = row.Validation.IsValid
-                ? await UpsertAsync(job.DataSourceId, row.Validation, cancellationToken)
+                ? row.Validation.IsTabular ? ImportRowStatus.Valid : await UpsertAsync(job.DataSourceId, row.Validation, cancellationToken)
                 : ImportRowStatus.Invalid;
             counts[(int)status]++;
             database.ImportRows.Add(ImportRow.Create(job.Id, row.Parsed.RowNumber, status,
@@ -48,7 +65,7 @@ public sealed class ImportJobStore(DataFlowDbContext database)
                 row.Validation.NaturalKey, row.Validation.Errors, processedAt, row.Validation.RowHash));
         }
         var now = await VerifyAsync(job, lease, cancellationToken);
-        job.RecordBatchCompletion(rows[^1].Parsed.CheckpointRowNumber, counts[1], counts[2], counts[3], counts[4], now);
+        job.RecordBatchCompletion(rows[^1].Parsed.CheckpointRowNumber, counts[1], counts[2], counts[3], counts[4], now, counts[5]);
         job.RenewLease(lease.Owner, now, leaseSeconds, lease.Version);
         await database.SaveChangesAsync(cancellationToken);
         // Check the database clock again after all writes, while retaining the job lock.
@@ -59,7 +76,7 @@ public sealed class ImportJobStore(DataFlowDbContext database)
     }
 
     public async Task FinalizeAsync(ImportLease lease, Guid messageId, int? totalRows,
-        string? failureCode, bool retryable, CancellationToken cancellationToken)
+        string? failureCode, bool retryable, CancellationToken cancellationToken, int attempt = 1)
     {
         database.ChangeTracker.Clear();
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
@@ -67,28 +84,38 @@ public sealed class ImportJobStore(DataFlowDbContext database)
         var job = await LockAsync(lease, cancellationToken);
         var deadline = job.LeaseUntil!.Value;
         var now = await VerifyAsync(job, lease, cancellationToken);
-        if (failureCode is not null)
+        if (job.CancelRequested) { job.ConfirmCancel(now); }
+        else if (failureCode is not null && retryable && attempt < 4)
         {
-            job.Fail(failureCode, retryable ? "Import interrupted by an infrastructure failure." : "The import file cannot be processed.", retryable, now);
+            job.ScheduleRetry(now, now.AddSeconds(ImportRecoveryMessage.Delays[attempt - 1]));
+            database.OutboxMessages.Add(ImportRecoveryMessage.Create(job, attempt + 1, now));
         }
-        else if (job.CancelRequested) { job.ConfirmCancel(now); }
+        else if (failureCode is not null)
+        {
+            job.Fail(retryable ? "import_retry_exhausted" : failureCode,
+                retryable ? "Import retry limit reached." : "The import file cannot be processed.", retryable, now);
+            if (retryable) { database.OutboxMessages.Add(ImportRecoveryMessage.Create(job, attempt, now, dead: true)); }
+        }
         else
         {
             job.SetTotalRows(totalRows!.Value, now);
             job.Complete(now);
         }
         database.ProcessedMessages.Add(ProcessedMessage.Create(messageId.ToString(), job.Id, lease.RunVersion, now));
-        database.OutboxMessages.Add(OutboxMessage.Create("import.job.finished", JsonSerializer.Serialize(new
+        if (job.IsTerminal())
         {
-            jobId = job.Id,
-            runVersion = job.RunVersion,
-            status = job.Status.ToString(),
-            job.ProcessedRows,
-            job.InsertedRows,
-            job.UpdatedRows,
-            job.InvalidRows,
-            job.DuplicateRows
-        }), now));
+            database.OutboxMessages.Add(OutboxMessage.Create("import.job.finished", JsonSerializer.Serialize(new
+            {
+                jobId = job.Id,
+                runVersion = job.RunVersion,
+                status = job.Status.ToString(),
+                job.ProcessedRows,
+                job.InsertedRows,
+                job.UpdatedRows,
+                job.InvalidRows,
+                job.DuplicateRows
+            }), now));
+        }
         await database.SaveChangesAsync(cancellationToken);
         // Terminal transitions clear the lease in the entity; verify the captured deadline.
         if (await NowAsync(cancellationToken) >= deadline) { throw new ImportLeaseUnavailableException(); }

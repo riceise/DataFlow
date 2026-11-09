@@ -27,6 +27,11 @@ public sealed class DataSourcesApiFixture : WebApplicationFactory<Program>, IAsy
         builder.UseEnvironment("Development");
         builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
             new Dictionary<string, string?> { ["ConnectionStrings:DataFlow"] = _postgres.GetConnectionString() }));
+        builder.ConfigureServices(services => services.AddAuthentication(options =>
+        {
+            options.DefaultAuthenticateScheme = "Test";
+            options.DefaultChallengeScheme = "Test";
+        }).AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, TestAuthentication>("Test", _ => { }));
     }
 
     public DataFlowDbContext CreateContext() => new(new DbContextOptionsBuilder<DataFlowDbContext>()
@@ -435,7 +440,7 @@ public sealed class DataSourcesStage4Tests(DataSourcesApiFixture fixture) : ICla
         return problem.Clone();
     }
 
-    private static SaveDataSourceRequest ValidRequest() => new()
+    internal static SaveDataSourceRequest ValidRequest() => new()
     {
         Name = "Клиенты",
         AcceptedFormats = ["Csv", "Xlsx"],

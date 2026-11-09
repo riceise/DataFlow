@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DataFlow.Application.DataSources;
 
-internal sealed class DataSourceHandlers(IDataFlowDbContext database) :
+internal sealed class DataSourceHandlers(IDataFlowDbContext database, ICurrentUser currentUser) :
     ICommandHandler<CreateDataSourceCommand, DataSourceDto>,
     ICommandHandler<UpdateDataSourceCommand, DataSourceDto>,
     ICommandHandler<ActivateDataSourceCommand, DataSourceDto>,
@@ -19,6 +19,7 @@ internal sealed class DataSourceHandlers(IDataFlowDbContext database) :
     {
         var source = DataSource.Create(request.Source.Name!, DataSourceDataType.Customer,
             request.Source.ToFormats(), request.Source.ToSchema(), DateTimeOffset.UtcNow);
+        source.AssignOwner(currentUser.UserId);
         database.DataSources.Add(source);
         await database.SaveChangesAsync(cancellationToken);
         return source.ToDto();
@@ -27,6 +28,11 @@ internal sealed class DataSourceHandlers(IDataFlowDbContext database) :
     public async Task<DataSourceDto> HandleAsync(UpdateDataSourceCommand request, CancellationToken cancellationToken)
     {
         var source = await FindAsync(request.Id, cancellationToken);
+        if (source.DefaultRuleSetVersionId is not null)
+        {
+            throw new DomainException("invalid_rule_definition", "Use rule versions to change rules for this source.");
+        }
+
         source.Update(request.Source.Name!, request.Source.ToFormats(), request.Source.ToSchema(), DateTimeOffset.UtcNow);
         await database.SaveChangesAsync(cancellationToken);
         return source.ToDto();
@@ -50,14 +56,14 @@ internal sealed class DataSourceHandlers(IDataFlowDbContext database) :
 
     public async Task<DataSourceDto> HandleAsync(GetDataSourceQuery request, CancellationToken cancellationToken)
     {
-        var source = await database.DataSources.AsNoTracking().SingleOrDefaultAsync(source => source.Id == request.Id, cancellationToken)
+        var source = await database.DataSources.AsNoTracking().SingleOrDefaultAsync(source => source.Id == request.Id && source.OwnerUserId == currentUser.UserId, cancellationToken)
             ?? throw NotFound();
         return source.ToDto();
     }
 
     public async Task<PagedResult<DataSourceDto>> HandleAsync(ListDataSourcesQuery request, CancellationToken cancellationToken)
     {
-        var query = database.DataSources.AsNoTracking();
+        var query = database.DataSources.AsNoTracking().Where(x => x.OwnerUserId == currentUser.UserId);
         var total = await query.LongCountAsync(cancellationToken);
         var offset = ((long)request.Page - 1) * request.PageSize;
         var sources = offset > int.MaxValue ? [] : await query.OrderByDescending(source => source.CreatedAt).ThenBy(source => source.Id)
@@ -66,7 +72,7 @@ internal sealed class DataSourceHandlers(IDataFlowDbContext database) :
     }
 
     private async Task<DataSource> FindAsync(Guid id, CancellationToken cancellationToken) =>
-        await database.DataSources.SingleOrDefaultAsync(source => source.Id == id, cancellationToken) ?? throw NotFound();
+        await database.DataSources.SingleOrDefaultAsync(source => source.Id == id && source.OwnerUserId == currentUser.UserId, cancellationToken) ?? throw NotFound();
 
     private static DomainException NotFound() => new("source_not_found", "Data source was not found.");
 }
