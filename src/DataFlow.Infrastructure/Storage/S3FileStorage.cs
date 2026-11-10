@@ -3,8 +3,6 @@ using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
 using DataFlow.Application.Abstractions;
-using DataFlow.Application.Dispatching;
-using DataFlow.Application.Jobs;
 using DataFlow.Infrastructure.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -74,7 +72,6 @@ public static class StorageExtensions
         });
         services.AddScoped<IFileStorage, S3FileStorage>();
         services.AddScoped<IImportFileReader, S3FileStorage>();
-        services.AddScoped<IRequestHandler<UploadFileCommand, JobAcceptedDto>, UploadFileHandler>();
         services.AddHostedService<OrphanCleanupService>();
         return services;
     }
