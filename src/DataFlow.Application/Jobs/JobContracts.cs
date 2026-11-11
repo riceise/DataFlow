@@ -11,9 +11,11 @@ public sealed record JobAcceptedDto(Guid JobId, string Status);
 public sealed record JobDto(Guid Id, Guid DataSourceId, string Status, int SchemaVersion,
     DateTimeOffset CreatedAt, DateTimeOffset? StartedAt, DateTimeOffset? CompletedAt,
     int? TotalRows, long ProcessedRows, long InsertedRows, long UpdatedRows, long InvalidRows, long DuplicateRows,
-    long ValidRows = 0, Guid? RuleSetVersionId = null, string? RuleSetName = null, int? RuleVersionNumber = null);
+    long ValidRows = 0, Guid? RuleSetVersionId = null, string? RuleSetName = null, int? RuleVersionNumber = null,
+    string OriginalFileName = "", bool CanRetry = false, bool CanCancel = false,
+    bool CancelRequested = false, DateTimeOffset? NextAttemptAt = null, string? LastErrorCode = null);
 public sealed record GetJobQuery(Guid Id) : IQuery<JobDto>;
-public sealed record ListJobsQuery(Guid DataSourceId, int Page = 1, int PageSize = 50, string? Status = null)
+public sealed record ListJobsQuery(Guid? DataSourceId, int Page = 1, int PageSize = 50, string? Status = null)
     : IQuery<PagedResult<JobDto>>;
 
 public sealed class ListJobsValidator : AbstractValidator<ListJobsQuery>

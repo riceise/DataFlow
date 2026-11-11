@@ -15,7 +15,10 @@ public sealed class JobQueries(IDataFlowDbContext database, ICurrentUser current
     private static readonly Expression<Func<ImportJob, JobDto>> Projection = job => new JobDto(
         job.Id, job.DataSourceId, job.Status.ToString(), job.SchemaVersion, job.CreatedAt, job.StartedAt,
         job.CompletedAt, job.TotalRows, job.ProcessedRows, job.InsertedRows, job.UpdatedRows, job.InvalidRows, job.DuplicateRows,
-        job.ValidRows, job.RuleSetVersionId, job.RuleSetNameAtSubmission, job.RuleVersionNumberAtSubmission);
+        job.ValidRows, job.RuleSetVersionId, job.RuleSetNameAtSubmission, job.RuleVersionNumberAtSubmission,
+        job.OriginalFileName, job.Status == ImportJobStatus.Failed && job.Retryable != 0,
+        !job.CancelRequested && (job.Status == ImportJobStatus.Queued || job.Status == ImportJobStatus.Processing || job.Status == ImportJobStatus.RetryScheduled),
+        job.CancelRequested, job.NextAttemptAt, job.LastErrorCode);
 
     public async Task<JobDto> HandleAsync(GetJobQuery request, CancellationToken cancellationToken) =>
         await database.ImportJobs.AsNoTracking().Where(x => x.Id == request.Id &&
@@ -24,12 +27,14 @@ public sealed class JobQueries(IDataFlowDbContext database, ICurrentUser current
 
     public async Task<PagedResult<JobDto>> HandleAsync(ListJobsQuery request, CancellationToken cancellationToken)
     {
-        if (!await database.DataSources.AnyAsync(x => x.Id == request.DataSourceId && x.OwnerUserId == currentUser.UserId, cancellationToken))
+        if (request.DataSourceId is not null && !await database.DataSources.AnyAsync(x => x.Id == request.DataSourceId && x.OwnerUserId == currentUser.UserId, cancellationToken))
         {
             throw new DomainException("source_not_found", "Data source was not found.");
         }
 
-        var query = database.ImportJobs.AsNoTracking().Where(x => x.DataSourceId == request.DataSourceId);
+        var query = database.ImportJobs.AsNoTracking().Where(x =>
+            (request.DataSourceId == null || x.DataSourceId == request.DataSourceId) &&
+            database.DataSources.Any(s => s.Id == x.DataSourceId && s.OwnerUserId == currentUser.UserId));
         if (request.Status is not null)
         {
             var status = Enum.Parse<ImportJobStatus>(request.Status);

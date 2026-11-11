@@ -1,19 +1,75 @@
+import axios from 'axios'
+
+export const http = axios.create({ baseURL: '/api/v1', withCredentials: true })
 let csrf = ''
+let tokenRequest: Promise<string> | undefined
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public code: string,
+    public errors: Record<string, string[]> = {},
+    public correlationId = '',
+  ) {
+    super(message)
+  }
+}
+
+http.interceptors.request.use(async (config) => {
+  if (!['get', 'head', 'options'].includes(config.method ?? 'get')) {
+    if (!csrf) {
+      tokenRequest ??= http
+        .get<{ token: string }>('/auth/antiforgery')
+        .then((r) => r.data.token)
+        .finally(() => {
+          tokenRequest = undefined
+        })
+      csrf = await tokenRequest
+    }
+    config.headers.set('X-CSRF-TOKEN', csrf)
+  }
+  return config
+})
+http.interceptors.response.use(
+  (response) => {
+    if (['/auth/login', '/auth/logout'].includes(response.config.url ?? '')) csrf = ''
+    return response
+  },
+  (error) => {
+    if (axios.isCancel(error)) return Promise.reject(error)
+    const response = axios.isAxiosError(error) ? error.response : undefined
+    const problem = response?.data ?? {}
+    const message =
+      response?.status === 401
+        ? 'Необходимо войти в систему.'
+        : response?.status === 404
+          ? 'Данные не найдены.'
+          : !response
+            ? 'Нет связи с сервером. Повторите запрос.'
+            : (problem.title ?? 'Не удалось выполнить запрос.')
+    return Promise.reject(
+      new ApiError(
+        message,
+        response?.status ?? 0,
+        problem.code ?? '',
+        problem.errors ?? {},
+        response?.headers['x-correlation-id'] ?? '',
+      ),
+    )
+  },
+)
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const method = init.method ?? 'GET'
-  if (method !== 'GET' && !csrf) {
-    const response = await fetch('/api/v1/auth/antiforgery', { credentials: 'same-origin' })
-    csrf = ((await response.json()) as { token: string }).token
-  }
-  const headers = new Headers(init.headers)
-  if (method !== 'GET') headers.set('X-CSRF-TOKEN', csrf)
-  if (init.body && !(init.body instanceof FormData)) headers.set('Content-Type', 'application/json')
-  const response = await fetch(`/api/v1${path}`, { ...init, headers, credentials: 'same-origin' })
-  if (!response.ok) {
-    const problem = await response.json().catch(() => ({ title: response.statusText }))
-    throw new Error(problem.errors ? JSON.stringify(problem.errors) : problem.title ?? `HTTP ${response.status}`)
-  }
-  if (path === '/auth/login' || path === '/auth/logout') csrf = ''
-  return response.status === 204 ? (undefined as T) : (await response.json()) as T
+  const headers = Object.fromEntries(new Headers(init.headers).entries())
+  if (init.body && !(init.body instanceof FormData)) headers['Content-Type'] = 'application/json'
+  return (
+    await http.request<T>({
+      url: path,
+      method: init.method ?? 'GET',
+      data: init.body,
+      headers,
+      signal: init.signal ?? undefined,
+    })
+  ).data
 }

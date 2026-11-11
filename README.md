@@ -105,6 +105,14 @@ Worker в отдельном терминале:
 dotnet run --project src/DataFlow.Worker
 ```
 
+Интерфейс оператора `Ui/` в отдельном терминале (Node LTS; подробности в `Ui/README.md`):
+
+```powershell
+cd Ui && npm install && npm run dev
+```
+
+Dev-сервер Vite проксирует `/api` на `http://localhost:5030` (переопределяется `API_PROXY_TARGET`).
+
 При старте API и Worker валидируют секции `ConnectionStrings`, `RabbitMq`, `Outbox`, `Storage` и `Import` и пишут структурированные JSON-логи в stdout.
 
 Worker требует PostgreSQL и RabbitMQ из Compose. При недоступном брокере host продолжает работать, dispatcher и consumer переподключаются с backoff до 30 секунд; outbox сохраняется в PostgreSQL. Подключение настраивается через `RabbitMq__Host`, `RabbitMq__Port`, `RabbitMq__VirtualHost`, `RabbitMq__User`, `RabbitMq__Password`.
@@ -297,8 +305,8 @@ Duplicate; повтор ключа внутри файла — Invalid `duplicat
 результат каждой строки, повтор доставки и HTTP idempotency.
 
 Ограничения: при отказе файла ранее закоммиченные батчи сохраняются: атомарность —
-на уровне батча. Экспорт ошибок и Dashboard доступны, но их UI-интеграция в
-`Ui/` ограничена страницей правил; полноценный операторский интерфейс — этап 10.
+на уровне батча. Экспорт ошибок, Dashboard и полный операторский сценарий доступны
+в интерфейсе `Ui/` (см. `Ui/README.md`).
 
 ## Структура
 

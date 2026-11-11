@@ -20,6 +20,13 @@ public static class FileEndpoints
     public static IEndpointRouteBuilder MapFileEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var secured = endpoints.MapGroup("").RequireAuthorization();
+        secured.MapGet("/api/v1/import-jobs", async (IDispatcher dispatcher, CancellationToken ct,
+            Guid? dataSourceId = null, int page = 1, int pageSize = 25, string? status = null) =>
+            Results.Ok(await dispatcher.DispatchAsync<ListJobsQuery, PagedResult<JobDto>>(new(dataSourceId, page, pageSize, status), ct)))
+            .WithTags("Import jobs").Produces<PagedResult<JobDto>>().ProducesProblem(400);
+        secured.MapGet("/api/v1/files/options", (IOptions<StorageOptions> storage) =>
+            Results.Ok(new { storage.Value.MaxFileBytes, Formats = new[] { "Csv", "Xlsx" } }))
+            .WithTags("Files");
         secured.MapPost("/api/v1/data-sources/{id:guid}/files", UploadAsync)
             .WithTags("Files").Produces<JobAcceptedDto>(202).ProducesProblem(400).ProducesProblem(404).ProducesProblem(409);
         secured.MapGet("/api/v1/data-sources/{id:guid}/jobs", async (Guid id, IDispatcher dispatcher,

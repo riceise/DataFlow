@@ -11,6 +11,7 @@ import '@fontsource/ibm-plex-sans/latin-500.css'
 import '@fontsource/ibm-plex-sans/latin-600.css'
 import '@fontsource/ibm-plex-mono/latin-400.css'
 import './styles/main.css'
+import './styles/operator.css'
 
 const app = createApp(App)
 
