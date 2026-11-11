@@ -4,6 +4,7 @@ import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { http, ApiError } from '@/api'
 import type { Field, Page, Source } from '@/models'
 import ApiState from '@/components/ApiState.vue'
+import PageHeader from '@/components/PageHeader.vue'
 const route = useRoute(),
   router = useRouter(),
   id = route.params.id ? String(route.params.id) : undefined
@@ -137,7 +138,10 @@ window.addEventListener('beforeunload', unload)
 onBeforeUnmount(() => window.removeEventListener('beforeunload', unload))
 </script>
 <template>
-  <h1>{{ id ? 'Редактировать источник' : 'Создать источник' }}</h1>
+  <PageHeader
+    :title="id ? 'Редактировать источник' : 'Создать источник'"
+    description="Настройте приём файлов и проверку данных."
+  />
   <ApiState :loading="loading" @retry="load" />
   <form v-if="!loading" class="panel operator-form" @submit.prevent="save">
     <div v-if="error" id="source-errors" tabindex="-1" class="form-error" role="alert">
@@ -146,49 +150,58 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', unload))
         <li v-for="(messages, path) in errors" :key="path">{{ path }}: {{ messages.join(' ') }}</li>
       </ul>
     </div>
-    <label v-if="!id"
-      >Способ настройки<select v-model="mode" class="form-control">
-        <option value="customer">Клиенты — ограниченный конструктор</option>
-        <option value="rules">Версия из библиотеки правил (Customer / Tabular)</option>
-      </select></label
-    ><label
-      >Название<input
-        v-model="name"
-        class="form-control"
-        maxlength="200"
-        required
-        :disabled="!!id && mode === 'rules'"
-        :aria-invalid="!!errors.name" /></label
-    ><template v-if="mode === 'rules'"
-      ><p v-if="id">На этой странице изменяется версия правил источника.</p>
-      <label
-        >Версия правил<select v-model="versionId" class="form-control" required>
-          <option value="">Выберите версию</option>
-          <option
-            v-if="
-              source?.defaultRuleSetVersionId &&
-              !versions.some((v) => v.id === source?.defaultRuleSetVersionId)
-            "
-            :value="source.defaultRuleSetVersionId"
-          >
-            Текущая версия
-          </option>
-          <option v-for="v in versions" :key="v.id" :value="v.id">
-            {{ v.name }} · v{{ v.versionNumber }}
-          </option>
+    <section class="form-section">
+      <h2>Основное</h2>
+      <label v-if="!id"
+        >Способ настройки<select v-model="mode" class="form-control">
+          <option value="customer">Клиенты — ограниченный конструктор</option>
+          <option value="rules">Версия из библиотеки правил (Customer / Tabular)</option>
         </select></label
-      >
-      <p>
-        Нужную версию можно добавить в библиотеку на странице
-        <RouterLink to="/rules">«Правила»</RouterLink>.
-      </p></template
-    ><template v-else
-      ><fieldset>
-        <legend>Форматы (выберите хотя бы один)</legend>
-        <label v-for="format in ['Csv', 'Xlsx']" :key="format" class="check-label"
-          ><input v-model="formats" type="checkbox" :value="format" />{{ format }}</label
+      ><label
+        >Название<input
+          v-model="name"
+          class="form-control"
+          maxlength="200"
+          required
+          :disabled="!!id && mode === 'rules'"
+          :aria-invalid="!!errors.name"
+      /></label>
+    </section>
+    <section class="form-section">
+      <template v-if="mode === 'rules'"
+        ><p v-if="id">На этой странице изменяется версия правил источника.</p>
+        <label
+          >Версия правил<select v-model="versionId" class="form-control" required>
+            <option value="">Выберите версию</option>
+            <option
+              v-if="
+                source?.defaultRuleSetVersionId &&
+                !versions.some((v) => v.id === source?.defaultRuleSetVersionId)
+              "
+              :value="source.defaultRuleSetVersionId"
+            >
+              Текущая версия
+            </option>
+            <option v-for="v in versions" :key="v.id" :value="v.id">
+              {{ v.name }} · v{{ v.versionNumber }}
+            </option>
+          </select></label
         >
-      </fieldset>
+        <p>
+          Нужную версию можно добавить в библиотеку на странице
+          <RouterLink to="/rules">«Правила»</RouterLink>.
+        </p></template
+      ><template v-else
+        ><h2>Формат данных</h2>
+        <fieldset>
+          <legend>Форматы (выберите хотя бы один)</legend>
+          <label v-for="format in ['Csv', 'Xlsx']" :key="format" class="check-label"
+            ><input v-model="formats" type="checkbox" :value="format" />{{ format }}</label
+          >
+        </fieldset>
+      </template>
+    </section>
+    <section v-if="mode !== 'rules'" class="form-section">
       <h2>Поля и правила</h2>
       <p>
         Ключ записи: externalId. Типы и обязательность основных полей фиксированы моделью Customer.
@@ -198,7 +211,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', unload))
         registeredAt</label
       >
       <div class="table-scroll">
-        <table class="operator-table">
+        <table class="operator-table schema-table">
           <thead>
             <tr>
               <th>Поле</th>
@@ -214,15 +227,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', unload))
               )"
               :key="field.name"
             >
-              <td>
+              <td class="schema-field-name">
                 {{ labels[field.name]
                 }}<small
                   ><code>{{ field.name }}</code></small
                 >
               </td>
-              <td>{{ field.type }}</td>
-              <td>{{ field.required ? 'Да' : 'Нет' }}</td>
-              <td>
+              <td data-label="Тип">{{ field.type }}</td>
+              <td data-label="Обязательно">{{ field.required ? 'Да' : 'Нет' }}</td>
+              <td data-label="Максимальная длина / формат">
                 <input
                   v-if="['string', 'email'].includes(field.type)"
                   v-model.number="field.maxLength"
@@ -241,6 +254,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', unload))
           </tbody>
         </table>
       </div>
+    </section>
+    <section v-if="mode !== 'rules'" class="form-section">
+      <h2>Чтение файла</h2>
       <label
         >Разделитель CSV<input
           v-model="delimiter"
@@ -249,8 +265,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', unload))
           minlength="1"
           maxlength="1"
       /></label>
-      <p>CSV: UTF-8. Даты: yyyy-MM-dd. Логические значения: true/false.</p></template
-    >
+      <p>CSV: UTF-8. Даты: yyyy-MM-dd. Логические значения: true/false.</p>
+    </section>
     <p v-if="id">
       Изменения применятся к новым импортам. Уже созданные задания используют сохранённую версию
       правил.

@@ -2,6 +2,7 @@
 withDefaults(defineProps<{ name: string; size?: number }>(), { size: 20 })
 
 const paths: Record<string, string> = {
+  rules: 'M5 4h14v17H5z M9 2v4h6V2 M8 10h8 M8 14h8 M8 18h4',
   overview: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
   imports: 'M4 4h16v16H4z M4 9h16 M9 9v11',
   sources: 'M4 6c0-4 16-4 16 0s-16 4-16 0 M4 6v6c0 4 16 4 16 0V6 M4 12v6c0 4 16 4 16 0v-6',

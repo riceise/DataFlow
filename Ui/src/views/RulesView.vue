@@ -5,6 +5,7 @@ import { useAuth } from '@/stores/auth'
 import { useResource } from '@/composables/useResource'
 import { active, type Job as ImportJob } from '@/models'
 import { storeToRefs } from 'pinia'
+import PageHeader from '@/components/PageHeader.vue'
 
 type Set = {
   id: string
@@ -51,6 +52,11 @@ const name = ref(''),
 const section = ref('mine'),
   job = ref<Job | null>(null),
   file = ref<File | null>(null)
+function changeSection(value: string) {
+  section.value = value
+  versions.value = []
+  if (value !== 'mine') void loadVersions()
+}
 const definition = ref(
   JSON.stringify(
     {
@@ -201,12 +207,11 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="rules-page">
-    <header>
-      <RouterLink to="/">← Обзор</RouterLink>
-      <h1>Библиотека правил</h1>
-      <span v-if="user">{{ user.email }}</span>
-    </header>
+  <div class="rules-page">
+    <PageHeader
+      title="Библиотека правил"
+      description="Наборы проверок, закреплённые версии и доступ к ним."
+    />
     <p v-if="error" role="alert" class="error">{{ error }}</p>
     <p v-if="message" role="status">{{ message }}</p>
     <form v-if="!user" @submit.prevent="login()" class="card">
@@ -220,26 +225,10 @@ onMounted(async () => {
     </form>
     <template v-else>
       <nav>
-        <button
-          @click="
-            section = 'mine';
-            versions = []
-          "
-        >
-          Мои наборы</button
-        ><button
-          @click="
-            section = 'library';
-            loadVersions()
-          "
-        >
+        <button :aria-pressed="section === 'mine'" @click="changeSection('mine')">Мои наборы</button
+        ><button :aria-pressed="section === 'library'" @click="changeSection('library')">
           Доступные мне</button
-        ><button
-          @click="
-            section = 'catalog';
-            loadVersions()
-          "
-        >
+        ><button :aria-pressed="section === 'catalog'" @click="changeSection('catalog')">
           Каталог
         </button>
         <button
@@ -396,7 +385,7 @@ onMounted(async () => {
         </div>
       </section>
     </template>
-  </main>
+  </div>
 </template>
 
 <style scoped>
@@ -404,7 +393,7 @@ onMounted(async () => {
   max-width: 1280px;
   margin: auto;
   padding: 2rem;
-  color: var(--text-primary, #233047);
+  color: var(--text-primary);
 }
 header,
 nav {
@@ -423,10 +412,10 @@ h1 {
   gap: 1rem;
 }
 .card {
-  border: 1px solid #a2afbe;
-  border-radius: 12px;
-  padding: 1.25rem;
-  margin-bottom: 1rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 24px;
+  margin-bottom: 24px;
 }
 label {
   display: block;
@@ -440,31 +429,48 @@ select {
   box-sizing: border-box;
   padding: 0.6rem;
   margin-top: 0.25rem;
-  border: 1px solid #8c9aad;
-  border-radius: 5px;
-  background: white;
-  color: #17253b;
+  border: 1px solid var(--border-control);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 textarea {
-  font-family: monospace;
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 12px;
+  line-height: 20px;
+  resize: vertical;
 }
 button {
   padding: 0.55rem 0.8rem;
   margin: 0.25rem;
   cursor: pointer;
-  border: 1px solid #8795a8;
+  border: 1px solid var(--border-control);
   border-radius: 5px;
 }
 button:disabled {
-  opacity: 0.55;
   cursor: default;
 }
 .error {
-  color: #b3261e;
+  color: var(--danger);
   white-space: pre-wrap;
 }
 li {
   margin: 0.5rem 0;
+}
+.card h2 {
+  margin-bottom: 16px;
+}
+.card h3 {
+  margin-top: 24px;
+}
+nav {
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 12px;
+}
+nav button[aria-pressed='true'] {
+  background: var(--bg-selected);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 @media (max-width: 760px) {
   .layout {
@@ -472,6 +478,9 @@ li {
   }
   .rules-page {
     padding: 1rem;
+  }
+  .card {
+    padding: 16px;
   }
 }
 </style>

@@ -9,6 +9,8 @@ defineEmits<{ retry: [] }>()
       <button class="text-button" @click="$emit('retry')">Повторить сейчас</button>
     </div>
   </div>
-  <p v-else-if="loading" role="status">Загрузка…</p>
+  <div v-else-if="loading" class="resource-loading" role="status">
+    <span class="loading-mark" aria-hidden="true" />Загружаем данные…
+  </div>
   <div v-else-if="empty" class="empty-state">Данных пока нет. <slot /></div>
 </template>

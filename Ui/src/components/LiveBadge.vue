@@ -9,6 +9,7 @@ defineProps<{ status: string }>()
       bad: ['Failed', 'Invalid'].includes(status),
       good: ['Completed', 'Valid', 'Inserted'].includes(status),
       warn: ['CompletedWithErrors', 'RetryScheduled'].includes(status),
+      info: ['Processing', 'Updated'].includes(status),
     }"
     >{{ statuses[status] ?? 'Неизвестный статус' }}</span
   >

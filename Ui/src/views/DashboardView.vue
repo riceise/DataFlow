@@ -5,6 +5,10 @@ import { type Summary, active, number } from '@/models'
 import { useResource } from '@/composables/useResource'
 import ApiState from '@/components/ApiState.vue'
 import ImportTable from '@/components/ImportTable.vue'
+import PageHeader from '@/components/PageHeader.vue'
+import DashboardMetrics from '@/components/DashboardMetrics.vue'
+import ResultBreakdown from '@/components/ResultBreakdown.vue'
+import AppIcon from '@/components/AppIcon.vue'
 const period = ref('week')
 const { data, error, loading, refresh } = useResource(
   (signal) =>
@@ -16,65 +20,57 @@ const { data, error, loading, refresh } = useResource(
 watch(period, refresh, { immediate: true })
 </script>
 <template>
-  <div class="page-heading">
-    <div>
-      <h1>Обзор</h1>
-      <p>Всё, что происходит с вашими данными.</p>
-    </div>
-    <div class="page-actions">
-      <label
-        >Период (UTC)<select v-model="period" class="form-control">
-          <option value="today">Сегодня</option>
-          <option value="week">Последние 7 дней</option>
-          <option value="month">Последние 30 дней</option>
-          <option value="all">Всё время</option>
-        </select></label
-      ><RouterLink to="/imports/new" class="button button-primary">Загрузить файл</RouterLink>
-    </div>
-  </div>
+  <PageHeader title="Обзор" description="Состояние импортов и результаты обработки.">
+    <label
+      >Период (UTC)<select v-model="period" class="form-control">
+        <option value="today">Сегодня</option>
+        <option value="week">Последние 7 дней</option>
+        <option value="month">Последние 30 дней</option>
+        <option value="all">Всё время</option>
+      </select></label
+    ><RouterLink to="/imports/new" class="button button-primary"
+      ><AppIcon name="upload" :size="18" />Загрузить файл</RouterLink
+    >
+  </PageHeader>
   <ApiState :error="error" :loading="loading && !data" :stale="!!data" @retry="refresh" />
   <template v-if="data"
-    ><section class="metric-strip">
-      <div
-        v-for="metric in [
-          { label: 'Всего заданий', value: data.totalJobs },
-          { label: 'Завершено без ошибок', value: data.completedJobs },
-          { label: 'Требуют внимания', value: data.attentionJobs },
-          { label: 'В работе', value: data.activeJobs },
-        ]"
-        :key="metric.label"
-        class="metric"
-      >
-        <span>{{ metric.label }}</span
-        ><strong>{{ number(metric.value) }}</strong>
+    ><DashboardMetrics :summary="data" />
+    <section class="panel dashboard-results">
+      <div class="section-heading">
+        <h2>Результаты обработки</h2>
+        <span class="section-note">За выбранный период</span>
       </div>
-    </section>
-    <section class="panel operator-panel">
-      <h2>Результаты обработки</h2>
       <div class="results-total">
         <strong>{{ number(data.processedRows) }}</strong
         ><span>строк обработано</span>
       </div>
-      <div class="counter-grid">
-        <div
-          v-for="result in [
-            { label: 'Добавлено', value: data.insertedRows },
-            { label: 'Обновлено', value: data.updatedRows },
-            { label: 'С ошибками', value: data.invalidRows },
-            { label: 'Без изменений', value: data.duplicateRows },
-            { label: 'Валидно (Tabular)', value: data.validRows },
-          ]"
-          :key="result.label"
-        >
-          <span>{{ result.label }}</span
-          ><strong>{{ number(result.value) }}</strong>
-        </div>
-      </div>
+      <ResultBreakdown
+        :inserted="data.insertedRows"
+        :updated="data.updatedRows"
+        :invalid="data.invalidRows"
+        :duplicate="data.duplicateRows"
+        :valid="data.validRows"
+      />
+      <p v-if="!data.processedRows" class="section-note results-empty">
+        За этот период обработанных строк пока нет.
+      </p>
     </section>
-    <section class="panel operator-panel">
-      <div class="page-heading">
-        <h2>Последние импорты</h2>
-        <RouterLink to="/imports" class="text-button">Все импорты →</RouterLink>
+    <section class="panel recent-section">
+      <div class="recent-header">
+        <div>
+          <h2>Последние импорты</h2>
+          <p>Последние загрузки за выбранный период</p>
+        </div>
+        <RouterLink to="/imports" class="text-button"
+          >Все импорты <AppIcon name="arrow" :size="16"
+        /></RouterLink>
+      </div>
+      <div v-if="data.failedJobs" class="dashboard-notice">
+        <AppIcon name="alert" :size="16" />
+        <p>
+          Есть сбои обработки: {{ number(data.failedJobs) }}. Часть результатов могла сохраниться.
+        </p>
+        <RouterLink to="/imports?status=Failed">Посмотреть</RouterLink>
       </div>
       <ImportTable
         v-if="data.recentJobs.length"
@@ -82,9 +78,9 @@ watch(period, refresh, { immediate: true })
         :sources="data.recentJobs.map((j) => ({ id: j.dataSourceId, name: j.dataSourceName }))"
       />
       <div v-else class="empty-state">
-        <h3>Подготовьте первый импорт</h3>
-        <p>Создайте источник и загрузите CSV или XLSX.</p>
-        <RouterLink to="/sources/new" class="button button-primary">Создать источник</RouterLink>
+        <h3>{{ data.totalJobs ? 'В этом периоде импортов нет' : 'Начните с источника данных' }}</h3>
+        <p>Выберите или создайте источник, затем загрузите CSV или XLSX.</p>
+        <RouterLink to="/sources" class="button button-secondary">К источникам</RouterLink>
       </div>
     </section></template
   >

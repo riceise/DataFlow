@@ -40,8 +40,11 @@ async function toggle() {
       <div>
         <h1>{{ data.name }}</h1>
         <p>
-          {{ data.isActive ? 'Активен' : 'Неактивен' }} · {{ data.dataType }} ·
-          {{ data.acceptedFormats.join(', ') }}
+          <span class="live-badge" :class="{ good: data.isActive }">{{
+            data.isActive ? 'Активен' : 'Неактивен'
+          }}</span>
+          · {{ data.dataType === 'Customer' ? 'Клиенты' : 'Табличные данные' }} ·
+          {{ data.acceptedFormats.join(', ').toUpperCase() }}
         </p>
       </div>
       <div class="page-actions">
@@ -69,7 +72,7 @@ async function toggle() {
         <pre>{{ JSON.stringify(definition, null, 2) }}</pre>
         <RouterLink to="/rules">Открыть библиотеку правил</RouterLink></template
       ><template v-else
-        ><p>
+        ><p class="source-schema-meta">
           Схема v{{ data.schemaVersion }} · Ключ: {{ data.schema.keyFields.join(', ') }} ·
           Разделитель: <code>{{ data.schema.csvDelimiter }}</code>
         </p>

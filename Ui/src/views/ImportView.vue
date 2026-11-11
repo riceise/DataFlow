@@ -7,6 +7,7 @@ import { useResource } from '@/composables/useResource'
 import ApiState from '@/components/ApiState.vue'
 import LiveBadge from '@/components/LiveBadge.vue'
 import PaginationBar from '@/components/PaginationBar.vue'
+import ResultBreakdown from '@/components/ResultBreakdown.vue'
 const route = useRoute(),
   router = useRouter(),
   id = String(route.params.id)
@@ -40,17 +41,6 @@ watch(
   (status, old) => {
     if (old && status !== old) void rows.refresh()
   },
-)
-const counters = computed(() =>
-  job.data.value
-    ? ([
-        ['Добавлено', job.data.value.insertedRows],
-        ['Обновлено', job.data.value.updatedRows],
-        ['С ошибками', job.data.value.invalidRows],
-        ['Без изменений', job.data.value.duplicateRows],
-        ['Валидно', job.data.value.validRows],
-      ] as const)
-    : [],
 )
 function query(values: Record<string, string | number | undefined>) {
   void router.replace({ query: { ...route.query, ...values } })
@@ -155,7 +145,7 @@ async function loadDefinition() {
     <p v-if="job.data.value.cancelRequested && active(job.data.value.status)" role="status">
       Отмена запрошена. Ожидаем остановки обработки.
     </p>
-    <section class="panel operator-panel">
+    <section class="panel operator-panel import-progress-panel">
       <div class="results-total">
         <strong>{{ number(job.data.value.processedRows) }}</strong
         ><span>строк обработано</span>
@@ -181,12 +171,13 @@ async function loadDefinition() {
         :max="job.data.value.totalRows"
         aria-label="Обработка строк"
       />
-      <div class="counter-grid">
-        <div v-for="[label, value] in counters" :key="label">
-          <span>{{ label }}</span
-          ><strong>{{ number(value) }}</strong>
-        </div>
-      </div>
+      <ResultBreakdown
+        :inserted="job.data.value.insertedRows"
+        :updated="job.data.value.updatedRows"
+        :invalid="job.data.value.invalidRows"
+        :duplicate="job.data.value.duplicateRows"
+        :valid="job.data.value.validRows"
+      />
       <p v-if="['Failed', 'Cancelled'].includes(job.data.value.status)">
         Сохранено результатов: {{ number(job.data.value.processedRows) }}. Они не были отменены.
         <RouterLink :to="{ path: '/imports/new', query: { sourceId: job.data.value.dataSourceId } }"
@@ -214,30 +205,32 @@ async function loadDefinition() {
         <pre v-if="showDefinition">{{ JSON.stringify(definition, null, 2) }}</pre>
       </details>
     </section>
-    <section class="panel operator-panel">
-      <h2>Результаты строк</h2>
-      <div class="filter-bar">
-        <label
-          >Результат<select
-            class="form-control"
-            :value="route.query.rows ?? ''"
-            @change="
-              query({ rows: ($event.target as HTMLSelectElement).value || undefined, page: 1 })
-            "
-          >
-            <option value="">Все строки</option>
-            <option
-              v-for="status in ['Invalid', 'Inserted', 'Updated', 'Duplicate', 'Valid']"
-              :key="status"
-              :value="status"
+    <section class="panel row-results-panel">
+      <div class="row-results-heading">
+        <h2>Результаты строк</h2>
+        <div class="filter-bar">
+          <label
+            >Результат<select
+              class="form-control"
+              :value="route.query.rows ?? ''"
+              @change="
+                query({ rows: ($event.target as HTMLSelectElement).value || undefined, page: 1 })
+              "
             >
-              {{ statuses[status] }}
-            </option>
-          </select></label
-        ><button class="button button-secondary" @click="rows.refresh">Обновить результаты</button
-        ><span v-if="active(job.data.value.status)"
-          >Строки обновляются по запросу; счётчики — автоматически.</span
-        >
+              <option value="">Все строки</option>
+              <option
+                v-for="status in ['Invalid', 'Inserted', 'Updated', 'Duplicate', 'Valid']"
+                :key="status"
+                :value="status"
+              >
+                {{ statuses[status] }}
+              </option>
+            </select></label
+          ><button class="button button-secondary" @click="rows.refresh">Обновить результаты</button
+          ><span v-if="active(job.data.value.status)"
+            >Строки обновляются по запросу; счётчики — автоматически.</span
+          >
+        </div>
       </div>
       <ApiState
         :error="rows.error.value"
@@ -247,7 +240,7 @@ async function loadDefinition() {
         @retry="rows.refresh"
       />
       <div v-if="rows.data.value" class="table-scroll">
-        <table class="operator-table">
+        <table class="operator-table row-results-table">
           <thead>
             <tr>
               <th>Строка</th>
@@ -260,13 +253,15 @@ async function loadDefinition() {
           <tbody>
             <template v-for="row in rows.data.value.items" :key="row.rowNumber"
               ><tr>
-                <td>{{ row.rowNumber }}</td>
-                <td><LiveBadge :status="row.status" /></td>
-                <td>
+                <td data-label="Строка">{{ row.rowNumber }}</td>
+                <td data-label="Результат"><LiveBadge :status="row.status" /></td>
+                <td data-label="Ключ">
                   <code>{{ row.naturalKey ?? '—' }}</code>
                 </td>
-                <td>{{ row.errors.map((e) => e.message).join('; ') || '—' }}</td>
-                <td>
+                <td data-label="Ошибки">
+                  {{ row.errors.map((e) => e.message).join('; ') || '—' }}
+                </td>
+                <td class="row-details-action">
                   <button
                     class="text-button"
                     :aria-expanded="expanded.includes(row.rowNumber)"
@@ -276,7 +271,7 @@ async function loadDefinition() {
                   </button>
                 </td>
               </tr>
-              <tr v-if="expanded.includes(row.rowNumber)">
+              <tr v-if="expanded.includes(row.rowNumber)" class="expanded-result-row">
                 <td colspan="5">
                   <div v-for="(item, index) in row.errors" :key="index" class="row-error">
                     <strong>{{ item.field }}</strong> — {{ item.message }}

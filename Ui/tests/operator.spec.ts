@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test'
 
-test('source → upload → row errors → CSV; unknown total and network recovery', async ({ page }) => {
+test('source → upload → row errors → CSV; unknown total and network recovery', async ({
+  page,
+}, testInfo) => {
   const sourceId = '971fbdd8-aa18-4121-8cad-8cf4ee18fe23'
   const jobId = 'dd78b18c-7d9d-4c93-843f-bb77bfae0068'
   const sources: Record<string, unknown>[] = []
@@ -96,18 +98,19 @@ test('source → upload → row errors → CSV; unknown total and network recove
   })
   await page.goto('/sources/new')
   await page.getByLabel('Название', { exact: true }).fill('Клиенты тест')
+  await page.screenshot({ path: testInfo.outputPath('source-form.png'), fullPage: true })
   await page.getByRole('button', { name: 'Сохранить', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Клиенты тест' })).toBeVisible()
   await page.getByRole('link', { name: 'Загрузить файл', exact: true }).click()
-  await page
-    .getByLabel('Файл CSV или XLSX')
-    .setInputFiles({
-      name: 'customers.csv',
-      mimeType: 'text/csv',
-      buffer: Buffer.from(
-        'externalId,name,email,isActive\na,A,a@example.test,true\nb,,bad-email,true',
-      ),
-    })
+  await expect(page.getByRole('heading', { name: 'Файл для импорта' })).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('upload.png'), fullPage: true })
+  await page.getByLabel('Файл CSV или XLSX').setInputFiles({
+    name: 'customers.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from(
+      'externalId,name,email,isActive\na,A,a@example.test,true\nb,,bad-email,true',
+    ),
+  })
   await page.getByRole('button', { name: 'Загрузить и начать импорт' }).click()
   await expect(page.getByRole('heading', { name: 'customers.csv' })).toBeVisible()
   expect(uploaded).toBe(true)
@@ -124,6 +127,7 @@ test('source → upload → row errors → CSV; unknown total and network recove
   await page.getByRole('button', { name: 'Раскрыть', exact: true }).click()
   await expect(page.getByText('invalid_email', { exact: true })).toBeVisible()
   await expect(page.getByText('required', { exact: true })).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('import-errors.png'), fullPage: true })
   const download = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Скачать ошибки CSV' }).click()
   expect((await download).suggestedFilename()).toBe(`import-${jobId}-errors.csv`)

@@ -38,4 +38,12 @@ export const active = (status: string) =>
   ['Queued', 'Processing', 'RetryScheduled'].includes(status)
 export const number = (value: number) => new Intl.NumberFormat('ru-RU').format(value)
 export const date = (value?: string | null) =>
-  value ? new Date(value).toLocaleString('ru-RU') : '—'
+  value
+    ? new Intl.DateTimeFormat('ru-RU', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(value))
+    : '—'

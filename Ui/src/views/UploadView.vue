@@ -5,6 +5,7 @@ import { http, ApiError } from '@/api'
 import type { Page, Source } from '@/models'
 import { useResource } from '@/composables/useResource'
 import ApiState from '@/components/ApiState.vue'
+import PageHeader from '@/components/PageHeader.vue'
 const route = useRoute(),
   router = useRouter(),
   sourceId = ref(String(route.query.sourceId ?? '')),
@@ -58,6 +59,11 @@ function reset() {
     error.value = ''
     void loadRules()
   }
+}
+function newAttempt() {
+  uncertain.value = false
+  reset()
+  file.value = undefined
 }
 function choose(value?: File) {
   file.value = undefined
@@ -131,101 +137,104 @@ onBeforeRouteLeave(() => !busy.value || window.confirm('Прервать заг�
 onBeforeUnmount(() => controller?.abort())
 </script>
 <template>
-  <div class="page-heading">
-    <div>
-      <h1>Загрузить файл</h1>
-      <p>Один файл — один импорт.</p>
-    </div>
+  <PageHeader title="Загрузить файл" description="Выберите источник и файл для обработки.">
     <RouterLink to="/imports" class="text-button">К истории</RouterLink>
-  </div>
+  </PageHeader>
   <ApiState :error="loadError" :loading="loading && !data" @retry="refresh" />
   <form v-if="data" class="panel operator-form" @submit.prevent="upload">
-    <label
-      >Источник<select
-        v-model="sourceId"
-        class="form-control"
-        :disabled="busy || uncertain"
-        required
-        @change="reset"
-      >
-        <option value="">Выберите источник</option>
-        <option
-          v-for="item in data.sources.filter((s) => s.isActive)"
-          :key="item.id"
-          :value="item.id"
+    <section class="form-section">
+      <h2>Источник данных</h2>
+      <p>Определяет форматы файла и правила проверки строк.</p>
+      <label
+        >Источник<select
+          v-model="sourceId"
+          class="form-control"
+          :disabled="busy || uncertain"
+          required
+          @change="reset"
         >
-          {{ item.name }}
-        </option>
-      </select></label
-    >
-    <p v-if="!data.sources.some((s) => s.isActive)">
-      Нет активных источников. <RouterLink to="/sources/new">Создать источник</RouterLink>
-    </p>
-    <section v-if="source">
-      <h2>Требования к файлу</h2>
-      <p>
-        {{ source.acceptedFormats.join(', ') }} · максимум
-        {{ Math.round(data.options.maxFileBytes / 1024 / 1024) }} МиБ
-      </p>
-      <p>CSV: UTF-8, первая строка — заголовки. XLSX: первый лист, первая строка — заголовки.</p>
-      <template v-if="!source.defaultRuleSetVersionId"
-        ><p>
-          Схема v{{ source.schemaVersion }} · разделитель CSV:
-          <code>{{ source.schema.csvDelimiter }}</code>
-        </p>
-        <p>
-          Колонки: {{ source.schema.fields.map((f) => f.name).join(', ') }}. Даты: yyyy-MM-dd.
-          Логические значения: true/false.
-        </p></template
-      ><template v-else
-        ><p>Будет закреплена версия правил источника.</p>
-        <button type="button" class="text-button" @click="loadRules">Показать правила</button>
-        <pre v-if="rules">{{ JSON.stringify(rules, null, 2) }}</pre>
-      </template>
-    </section>
-    <div
-      class="dropzone"
-      :class="{ 'drag-over': dragging }"
-      @dragover.prevent="dragging = true"
-      @dragleave.prevent="dragging = false"
-      @drop.prevent="drop"
-    >
-      <strong>{{ file?.name ?? 'Перетащите CSV или XLSX' }}</strong>
-      <p v-if="file">{{ Math.ceil(file.size / 1024) }} КиБ</p>
-      <button
-        type="button"
-        class="button button-secondary"
-        :disabled="busy || uncertain"
-        @click="input?.click()"
+          <option value="">Выберите источник</option>
+          <option
+            v-for="item in data.sources.filter((s) => s.isActive)"
+            :key="item.id"
+            :value="item.id"
+          >
+            {{ item.name }}
+          </option>
+        </select></label
       >
-        {{ file ? 'Заменить файл' : 'Выбрать файл' }}</button
-      ><input
-        ref="input"
-        type="file"
-        class="sr-only"
-        accept=".csv,.xlsx"
-        :disabled="busy || uncertain"
-        aria-label="Файл CSV или XLSX"
-        @change="choose(($event.target as HTMLInputElement).files?.[0])"
-      />
-    </div>
-    <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-    <div v-if="busy" role="status">
-      <progress
-        v-if="percent !== undefined"
-        :value="percent"
-        max="100"
-        aria-label="Передача файла"
-      />
-      <p>
-        {{
-          percent === 100
-            ? 'Файл передан. Ожидаем подтверждения…'
-            : `Передача файла${percent === undefined ? '…' : `: ${percent}%`}`
-        }}
+      <p v-if="!data.sources.some((s) => s.isActive)">
+        Нет активных источников. <RouterLink to="/sources/new">Создать источник</RouterLink>
       </p>
-    </div>
-    <p v-if="!sourceId || !file">Для отправки выберите источник и файл.</p>
+      <section v-if="source" class="upload-requirements">
+        <h2>Требования к файлу</h2>
+        <p>
+          {{ source.acceptedFormats.join(', ') }} · максимум
+          {{ Math.round(data.options.maxFileBytes / 1024 / 1024) }} МиБ
+        </p>
+        <p>CSV: UTF-8, первая строка — заголовки. XLSX: первый лист, первая строка — заголовки.</p>
+        <template v-if="!source.defaultRuleSetVersionId"
+          ><p>
+            Схема v{{ source.schemaVersion }} · разделитель CSV:
+            <code>{{ source.schema.csvDelimiter }}</code>
+          </p>
+          <p>
+            Колонки: {{ source.schema.fields.map((f) => f.name).join(', ') }}. Даты: yyyy-MM-dd.
+            Логические значения: true/false.
+          </p></template
+        ><template v-else
+          ><p>Будет закреплена версия правил источника.</p>
+          <button type="button" class="text-button" @click="loadRules">Показать правила</button>
+          <pre v-if="rules">{{ JSON.stringify(rules, null, 2) }}</pre>
+        </template>
+      </section>
+    </section>
+    <section class="form-section">
+      <h2>Файл для импорта</h2>
+      <div
+        class="dropzone"
+        :class="{ 'drag-over': dragging }"
+        @dragover.prevent="dragging = true"
+        @dragleave.prevent="dragging = false"
+        @drop.prevent="drop"
+      >
+        <strong>{{ file?.name ?? 'Перетащите CSV или XLSX' }}</strong>
+        <p v-if="file">{{ Math.ceil(file.size / 1024) }} КиБ</p>
+        <button
+          type="button"
+          class="button button-secondary"
+          :disabled="busy || uncertain"
+          @click="input?.click()"
+        >
+          {{ file ? 'Заменить файл' : 'Выбрать файл' }}</button
+        ><input
+          ref="input"
+          type="file"
+          class="sr-only"
+          accept=".csv,.xlsx"
+          :disabled="busy || uncertain"
+          aria-label="Файл CSV или XLSX"
+          @change="choose(($event.target as HTMLInputElement).files?.[0])"
+        />
+      </div>
+      <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+      <div v-if="busy" role="status">
+        <progress
+          v-if="percent !== undefined"
+          :value="percent"
+          max="100"
+          aria-label="Передача файла"
+        />
+        <p>
+          {{
+            percent === 100
+              ? 'Файл передан. Ожидаем подтверждения…'
+              : `Передача файла${percent === undefined ? '…' : `: ${percent}%`}`
+          }}
+        </p>
+      </div>
+      <p v-if="!sourceId || !file">Для отправки выберите источник и файл.</p>
+    </section>
     <div class="page-actions">
       <button class="button button-primary" :disabled="busy || !file || !source?.isActive">
         {{ uncertain ? 'Повторить с тем же ключом' : 'Загрузить и начать импорт' }}</button
@@ -236,16 +245,7 @@ onBeforeUnmount(() => controller?.abort())
         @click="controller?.abort()"
       >
         Прервать загрузку</button
-      ><button
-        v-if="uncertain"
-        type="button"
-        class="text-button"
-        @click="
-          uncertain = false;
-          reset();
-          file = undefined
-        "
-      >
+      ><button v-if="uncertain" type="button" class="text-button" @click="newAttempt">
         Начать новую попытку
       </button>
     </div>
