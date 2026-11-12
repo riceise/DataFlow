@@ -356,29 +356,36 @@ onMounted(async () => {
             >Загрузить JSON<input type="file" accept=".json,application/json" @change="importJson"
           /></label>
           <p id="definition-label">JSON правил</p>
-          <RuleDefinitionEditor
-            ref="editor"
-            v-model="definition"
-            :diagnostics="diagnostics"
-            :disabled="busy"
-          />
-          <div v-if="diagnostics.length" class="definition-errors" role="alert">
-            <h3>Исправьте ошибки в определении: {{ diagnostics.length }}</h3>
-            <ul>
-              <li v-for="(issue, index) in diagnostics" :key="`${issue.path}-${index}`">
-                <strong v-if="issue.fieldName">Поле «{{ issue.fieldName }}»</strong>
-                <p>{{ issue.message }}</p>
-                <p v-if="issue.hint" class="hint">{{ issue.hint }}</p>
-                <button type="button" @click="editor?.focusIssue(issue)">
-                  Перейти к ошибке · {{ issue.path }} · строка
-                  {{ diagnosticPosition(definition, issue.from).line }}, столбец
-                  {{ diagnosticPosition(definition, issue.from).column }}
-                </button>
-              </li>
-            </ul>
+          <div class="definition-workspace" :class="{ 'has-errors': diagnostics.length }">
+            <RuleDefinitionEditor
+              ref="editor"
+              v-model="definition"
+              :diagnostics="diagnostics"
+              :disabled="busy"
+            />
+            <div v-if="diagnostics.length" class="definition-errors" role="alert">
+              <h3>Исправьте ошибки в определении: {{ diagnostics.length }}</h3>
+              <ul>
+                <li v-for="(issue, index) in diagnostics" :key="`${issue.path}-${index}`">
+                  <strong v-if="issue.fieldName">Поле «{{ issue.fieldName }}»</strong>
+                  <p>{{ issue.message }}</p>
+                  <p v-if="issue.hint" class="hint">{{ issue.hint }}</p>
+                  <button type="button" @click="editor?.focusIssue(issue)">
+                    Перейти к ошибке · {{ issue.path }} · строка
+                    {{ diagnosticPosition(definition, issue.from).line }}, столбец
+                    {{ diagnosticPosition(definition, issue.from).column }}
+                  </button>
+                </li>
+              </ul>
+            </div>
           </div>
-          <p v-else-if="validationStale" role="status">Определение изменено. Повторите проверку.</p>
-          <p v-else-if="definitionValid && checkedDefinition === definition" role="status">
+          <p v-if="!diagnostics.length && validationStale" role="status">
+            Определение изменено. Повторите проверку.
+          </p>
+          <p
+            v-else-if="!diagnostics.length && definitionValid && checkedDefinition === definition"
+            role="status"
+          >
             Определение корректно
           </p>
           <button
@@ -563,7 +570,7 @@ button:disabled {
   margin-top: 12px;
   overflow-wrap: anywhere;
 }
-.definition-errors h3 {
+.card .definition-errors h3 {
   margin-top: 0;
 }
 .definition-errors p {
@@ -594,6 +601,27 @@ nav button[aria-pressed='true'] {
   background: var(--bg-selected);
   color: var(--accent);
   border-color: var(--accent);
+}
+@media (min-width: 1024px) {
+  .rules-page {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+  .layout {
+    grid-template-columns: minmax(160px, 0.55fr) minmax(0, 2.45fr);
+    align-items: start;
+  }
+  .definition-workspace.has-errors {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(220px, 1fr);
+    align-items: start;
+    gap: 16px;
+  }
+  .definition-errors {
+    min-width: 0;
+    margin-top: 0;
+  }
 }
 @media (max-width: 760px) {
   .layout {
