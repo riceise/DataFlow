@@ -35,7 +35,10 @@ const {
     sources.push(...result.data.items)
     total = result.data.total
   } while (sources.length < total)
-  const options = await http.get<{ maxFileBytes: number }>('/files/options', { signal })
+  const options = await http.get<{ maxFileBytes: number; maxXlsxFileBytes?: number }>(
+    '/files/options',
+    { signal },
+  )
   return { sources, options: options.data }
 })
 void refresh()
@@ -49,7 +52,7 @@ async function loadRules() {
         await http.get(`/rule-set-versions/${source.value.defaultRuleSetVersionId}`)
       ).data.definition
     } catch (e) {
-      error.value = String(e)
+      error.value = e instanceof Error ? e.message : String(e)
     }
 }
 function reset() {
@@ -73,7 +76,13 @@ function choose(value?: File) {
     error.value = 'Выберите CSV или XLSX.'
     return
   }
-  if (!value.size || (data.value && value.size > data.value.options.maxFileBytes)) {
+  const isXlsx = /\.xlsx$/i.test(value.name)
+  const maxBytes = data.value
+    ? isXlsx
+      ? (data.value.options.maxXlsxFileBytes ?? data.value.options.maxFileBytes)
+      : data.value.options.maxFileBytes
+    : undefined
+  if (!value.size || (maxBytes !== undefined && value.size > maxBytes)) {
     error.value = 'Файл пустой или превышает допустимый размер.'
     return
   }
@@ -111,6 +120,9 @@ async function upload() {
       form,
       {
         signal: controller.signal,
+        params: source.value.defaultRuleSetVersionId
+          ? { ruleSetVersionId: source.value.defaultRuleSetVersionId }
+          : undefined,
         headers: { 'Idempotency-Key': key.value },
         onUploadProgress: (p) => {
           percent.value = p.total
@@ -170,7 +182,13 @@ onBeforeUnmount(() => controller?.abort())
         <h2>Требования к файлу</h2>
         <p>
           {{ source.acceptedFormats.join(', ') }} · максимум
-          {{ Math.round(data.options.maxFileBytes / 1024 / 1024) }} МиБ
+          {{ Math.round(data.options.maxFileBytes / 1024 / 1024) }} МиБ{{
+            data.options.maxXlsxFileBytes &&
+            data.options.maxXlsxFileBytes < data.options.maxFileBytes &&
+            source.acceptedFormats.includes('Xlsx')
+              ? ` (XLSX — до ${Math.round(data.options.maxXlsxFileBytes / 1024 / 1024)} МиБ)`
+              : ''
+          }}
         </p>
         <p>CSV: UTF-8, первая строка — заголовки. XLSX: первый лист, первая строка — заголовки.</p>
         <template v-if="!source.defaultRuleSetVersionId"

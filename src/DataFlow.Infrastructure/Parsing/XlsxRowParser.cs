@@ -587,7 +587,6 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
                 }
 
                 previousColumn = colIndex;
-                maxColumn = Math.Max(maxColumn, colIndex);
 
                 var cellType = reader.GetAttribute("t");
                 var styleAttr = reader.GetAttribute("s");
@@ -597,6 +596,13 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
 
                 var cell = await ReadSingleCellAsync(reader, rowNumber, colIndex, cellType, styleIndex,
                     limits.MaxCellLength, sharedStrings, dateStyles, date1904, cancellationToken);
+
+                if (cell.RawText.Length == 0 && cell.ErrorCode is null && !cell.HasExplicitEmptyValue)
+                {
+                    continue;
+                }
+
+                maxColumn = Math.Max(maxColumn, colIndex);
 
                 if (cell.ErrorCode is not null)
                 {
@@ -819,17 +825,23 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
 
             case "b":
                 {
-                    if (!hasValueElement || valueText.Length == 0)
+                    var trimmed = valueText.Trim();
+                    if (!hasValueElement || trimmed.Length == 0)
                     {
                         return new(colIndex, string.Empty, null, null, false);
                     }
 
-                    if (valueText is "1" or "true" or "TRUE")
+                    if (valueText.Length > maxCellLength)
+                    {
+                        throw new ImportFileException("cell_limit_exceeded", "The XLSX record exceeds the cell length limit.", rowNumber);
+                    }
+
+                    if (trimmed is "1" or "true" or "TRUE")
                     {
                         return new(colIndex, "true", null, null, false);
                     }
 
-                    if (valueText is "0" or "false" or "FALSE")
+                    if (trimmed is "0" or "false" or "FALSE")
                     {
                         return new(colIndex, "false", null, null, false);
                     }
@@ -840,7 +852,8 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
 
             case "d":
                 {
-                    if (!hasValueElement || valueText.Length == 0)
+                    var trimmed = valueText.Trim();
+                    if (!hasValueElement || trimmed.Length == 0)
                     {
                         return new(colIndex, string.Empty, null, null, false);
                     }
@@ -850,19 +863,19 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
                         throw new ImportFileException("cell_limit_exceeded", "The XLSX record exceeds the cell length limit.", rowNumber);
                     }
 
-                    if (DateOnly.TryParseExact(valueText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var dateOnly))
+                    if (DateOnly.TryParseExact(trimmed, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var dateOnly))
                     {
                         return new(colIndex, dateOnly.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), null, null, false);
                     }
 
-                    if (DateTimeOffset.TryParse(valueText, CultureInfo.InvariantCulture,
+                    if (DateTimeOffset.TryParse(trimmed, CultureInfo.InvariantCulture,
                             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dto) &&
                         dto.TimeOfDay == TimeSpan.Zero)
                     {
                         return new(colIndex, DateOnly.FromDateTime(dto.UtcDateTime).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), null, null, false);
                     }
 
-                    return new(colIndex, valueText, null, null, false);
+                    return new(colIndex, trimmed, null, null, false);
                 }
 
             case null:
@@ -963,7 +976,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         Array.Fill(headers, string.Empty);
         foreach (var cell in headerRow.Cells)
         {
-            headers[cell.ColumnIndex - 1] = cell.RawText;
+            headers[cell.ColumnIndex - 1] = cell.RawText.Trim();
         }
 
         return headers;
@@ -1004,7 +1017,8 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
             return fallback;
         }
 
-        if (!int.TryParse(attribute, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) || number < fallback)
+        if (!int.TryParse(attribute, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) ||
+            number < fallback || number > 1_048_576)
         {
             throw new ImportFileException("invalid_xlsx_syntax", "The XLSX row number is invalid.", fallback);
         }

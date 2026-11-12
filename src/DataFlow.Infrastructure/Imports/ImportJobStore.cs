@@ -113,7 +113,8 @@ public sealed class ImportJobStore(DataFlowDbContext database)
                 job.InsertedRows,
                 job.UpdatedRows,
                 job.InvalidRows,
-                job.DuplicateRows
+                job.DuplicateRows,
+                job.ValidRows
             }), now));
         }
         await database.SaveChangesAsync(cancellationToken);

@@ -47,14 +47,14 @@ public sealed class CsvRowParser(IOptions<ImportProcessingOptions> options) : IC
 
         var header = await ReadRecordAsync(csv, reader, limits, cancellationToken)
             ?? throw new ImportFileException("empty_file", "A CSV header is required.", 1);
-        ValidateHeader(header.Cells, schema);
-        var headers = header.Cells;
+        var headers = Array.ConvertAll(header.Cells, static cell => cell.Trim());
+        ValidateHeader(headers, schema);
         var dataRows = 0;
 
         while (await ReadRecordAsync(csv, reader, limits, cancellationToken) is { } record)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(record.RawRecord))
+            if (IsBlankRecord(record, schema.CsvDelimiter[0]))
             {
                 yield return new(record.StartRow, new Dictionary<string, string?>(), "[]", IsEmpty: true,
                     LastPhysicalRowNumber: record.EndRow);
@@ -149,6 +149,17 @@ public sealed class CsvRowParser(IOptions<ImportProcessingOptions> options) : IC
         {
             throw new ImportFileException("missing_csv_header", "The CSV header is missing a schema column.", 1);
         }
+    }
+
+    private static bool IsBlankRecord(CsvRecord record, char delimiter)
+    {
+        if (record.Cells.Length > 1)
+        {
+            return false;
+        }
+
+        var raw = record.RawRecord.AsSpan().TrimEnd(['\r', '\n']);
+        return char.IsWhiteSpace(delimiter) ? raw.IsEmpty : raw.IsWhiteSpace();
     }
 
     private sealed record CsvRecord(int StartRow, int EndRow, string[] Cells, string RawRecord);

@@ -79,7 +79,13 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
                 {
                     throw new ImportCancellationRequestedException();
                 }
-                batch.Add(new(row, ruleProcessor is null ? processor!.Process(row) : ruleProcessor.Process(row)));
+                var validation = ruleProcessor is null ? processor!.Process(row) : ruleProcessor.Process(row);
+                if (row.IsEmpty && batch is [.., { Parsed.IsEmpty: true }])
+                {
+                    batch[^1] = new(row, validation);
+                    continue;
+                }
+                batch.Add(new(row, validation));
                 if (batch.Count < options.Value.BatchSize) { continue; }
                 await store.CommitBatchAsync(lease, batch, options.Value.LeaseSeconds, cancellationToken);
                 batch.Clear();

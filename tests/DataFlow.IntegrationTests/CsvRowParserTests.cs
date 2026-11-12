@@ -93,6 +93,15 @@ public sealed class CsvRowParserTests
         var result = processor.Process(rows[0]);
         Assert.Equal(4, result.Errors.Count);
         Assert.All(result.Errors, error => Assert.Equal("required", error.Code));
+
+        var tsvHeader = "externalId\tname\temail\tregisteredAt\tisActive";
+        var tsvRows = await ReadAll(tsvHeader + "\n\t\t\t\t\n\n", schema: Schema("\t"));
+        Assert.Equal(2, tsvRows.Count);
+        Assert.False(tsvRows[0].IsEmpty);
+        Assert.True(tsvRows[1].IsEmpty);
+        var tsvResult = new CustomerFileRowProcessor(Guid.NewGuid(), Schema("\t")).Process(tsvRows[0]);
+        Assert.Equal(4, tsvResult.Errors.Count);
+        Assert.All(tsvResult.Errors, error => Assert.Equal("required", error.Code));
     }
 
     [Theory]
@@ -116,18 +125,34 @@ public sealed class CsvRowParserTests
     [InlineData("", "empty_file")]
     [InlineData("\n", "empty_csv_header")]
     [InlineData("externalId,name,email,registeredAt,", "empty_csv_header")]
+    [InlineData("externalId,name,email,registeredAt,   ", "empty_csv_header")]
     [InlineData("externalId,name,email,registeredAt,name", "duplicate_csv_header")]
     [InlineData("externalId,name,email,registeredAt,NAME", "duplicate_csv_header")]
+    [InlineData("externalId, name ,email,registeredAt, NAME ", "duplicate_csv_header")]
     [InlineData("externalId,name,email,registeredAt,secretValue", "unknown_csv_header")]
     [InlineData("externalId,name,email,isActive", "missing_csv_header")]
     [InlineData("externalId,name,email,registeredAt,IsActive", "unknown_csv_header")]
-    [InlineData("externalId, name,email,registeredAt,isActive", "unknown_csv_header")]
     public async Task InvalidHeaders_AreControlledFileRejections(string csv, string code)
     {
         var exception = await Assert.ThrowsAsync<ImportFileException>(() => ReadAll(csv));
         Assert.Equal(code, exception.Code);
         Assert.Equal(1, exception.RowNumber);
         Assert.DoesNotContain("secretValue", exception.ToString());
+    }
+
+    [Fact]
+    public async Task HeaderCellsWithSurroundingWhitespace_AreTrimmed_WhileDataRawCellsKeepOriginalWhitespace()
+    {
+        var csv = " externalId , \"name\" , \" email \" ,\tregisteredAt\t, isActive \r\n ID-1 , Alice ,a@example.com,2024-02-29,true";
+        var row = Assert.Single(await ReadAll(csv));
+        Assert.Empty(row.Errors!);
+        Assert.Equal(" ID-1 ", row.Values["externalId"]);
+        Assert.Equal(" Alice ", row.Values["name"]);
+        Assert.Equal("a@example.com", row.Values["email"]);
+        var validation = new CustomerFileRowProcessor(Guid.NewGuid(), Schema()).Process(row);
+        Assert.True(validation.IsValid);
+        Assert.Equal("ID-1", validation.Customer!.ExternalId);
+        Assert.Equal("Alice", validation.Customer.Name);
     }
 
     [Fact]

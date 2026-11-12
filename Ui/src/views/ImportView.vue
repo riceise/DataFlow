@@ -2,7 +2,16 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { http } from '@/api'
-import { type Job, type Page, type Row, active, number, date, statuses } from '@/models'
+import {
+  type Job,
+  type Page,
+  type Row,
+  active,
+  number,
+  date,
+  statuses,
+  jobErrorMessages,
+} from '@/models'
 import { useResource } from '@/composables/useResource'
 import ApiState from '@/components/ApiState.vue'
 import LiveBadge from '@/components/LiveBadge.vue'
@@ -79,7 +88,7 @@ async function download() {
     a.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (e) {
-    actionError.value = String(e)
+    actionError.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = false
   }
@@ -90,7 +99,7 @@ async function loadDefinition() {
     try {
       definition.value = (await http.get(`/jobs/${id}/rule-definition`)).data
     } catch (e) {
-      actionError.value = String(e)
+      actionError.value = e instanceof Error ? e.message : String(e)
     }
 }
 </script>
@@ -179,13 +188,21 @@ async function loadDefinition() {
         :valid="job.data.value.validRows"
       />
       <p v-if="['Failed', 'Cancelled'].includes(job.data.value.status)">
-        Сохранено результатов: {{ number(job.data.value.processedRows) }}. Они не были отменены.
+        {{
+          job.data.value.processedRows
+            ? `Сохранено результатов: ${number(job.data.value.processedRows)}. Они не были отменены.`
+            : 'Ни одна строка не была сохранена.'
+        }}
         <RouterLink :to="{ path: '/imports/new', query: { sourceId: job.data.value.dataSourceId } }"
           >Загрузить исправленный файл</RouterLink
         >
       </p>
       <p v-if="job.data.value.lastErrorCode">
-        Причина сбоя: <code>{{ job.data.value.lastErrorCode }}</code>
+        Причина сбоя:
+        <template v-if="jobErrorMessages[job.data.value.lastErrorCode]"
+          >{{ jobErrorMessages[job.data.value.lastErrorCode] }}
+        </template>
+        <code>{{ job.data.value.lastErrorCode }}</code>
       </p>
       <p v-if="job.data.value.nextAttemptAt">
         Следующая попытка: {{ date(job.data.value.nextAttemptAt) }}

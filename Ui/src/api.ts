@@ -1,8 +1,17 @@
 import axios from 'axios'
+import { errorMessages } from '@/models'
 
 export const http = axios.create({ baseURL: '/api/v1', withCredentials: true })
 let csrf = ''
 let tokenRequest: Promise<string> | undefined
+
+export type RuleDefinitionIssue = {
+  code: string
+  path: string
+  message: string
+  hint: string
+  fieldName?: string | null
+}
 
 export class ApiError extends Error {
   constructor(
@@ -11,6 +20,7 @@ export class ApiError extends Error {
     public code: string,
     public errors: Record<string, string[]> = {},
     public correlationId = '',
+    public issues: RuleDefinitionIssue[] = [],
   ) {
     super(message)
   }
@@ -36,25 +46,37 @@ http.interceptors.response.use(
     if (['/auth/login', '/auth/logout'].includes(response.config.url ?? '')) csrf = ''
     return response
   },
-  (error) => {
+  async (error) => {
     if (axios.isCancel(error)) return Promise.reject(error)
     const response = axios.isAxiosError(error) ? error.response : undefined
-    const problem = response?.data ?? {}
+    let problem = response?.data ?? {}
+    if (typeof Blob !== 'undefined' && problem instanceof Blob) {
+      try {
+        problem = JSON.parse(await problem.text())
+      } catch {
+        problem = {}
+      }
+    }
+    const code = typeof problem?.code === 'string' ? problem.code : ''
+    const mapped = code ? errorMessages[code] : undefined
     const message =
       response?.status === 401
         ? 'Необходимо войти в систему.'
-        : response?.status === 404
-          ? 'Данные не найдены.'
-          : !response
-            ? 'Нет связи с сервером. Повторите запрос.'
-            : (problem.title ?? 'Не удалось выполнить запрос.')
+        : mapped
+          ? mapped
+          : response?.status === 404
+            ? 'Данные не найдены.'
+            : !response
+              ? 'Нет связи с сервером. Повторите запрос.'
+              : (problem?.title ?? 'Не удалось выполнить запрос.')
     return Promise.reject(
       new ApiError(
         message,
         response?.status ?? 0,
-        problem.code ?? '',
-        problem.errors ?? {},
+        code,
+        problem?.errors ?? {},
         response?.headers['x-correlation-id'] ?? '',
+        Array.isArray(problem?.issues) ? problem.issues : [],
       ),
     )
   },

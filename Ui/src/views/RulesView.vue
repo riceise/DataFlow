@@ -1,11 +1,17 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
-import { api } from '@/api'
+import { computed, onMounted, ref, watch } from 'vue'
+import { api, ApiError, type RuleDefinitionIssue } from '@/api'
 import { useAuth } from '@/stores/auth'
 import { useResource } from '@/composables/useResource'
-import { active, type Job as ImportJob } from '@/models'
+import { active, statuses, jobErrorMessages, type Job as ImportJob } from '@/models'
 import { storeToRefs } from 'pinia'
 import PageHeader from '@/components/PageHeader.vue'
+import RuleDefinitionEditor from '@/components/RuleDefinitionEditor.vue'
+import {
+  diagnosticPosition,
+  locateIssues,
+  syntaxDiagnostics,
+} from '@/utils/ruleDefinitionDiagnostics'
 
 type Set = {
   id: string
@@ -29,9 +35,10 @@ type Job = {
   id: string
   status: string
   processedRows: number
-  validRows: number
+  acceptedRows: number
   invalidRows: number
   ruleVersionNumber: number
+  lastErrorCode?: string | null
 }
 const { user } = storeToRefs(useAuth())
 const email = ref(''),
@@ -74,6 +81,50 @@ const definition = ref(
   ),
 )
 const jobId = ref('')
+const editor = ref<InstanceType<typeof RuleDefinitionEditor>>()
+const definitionIssues = ref<RuleDefinitionIssue[]>([])
+const checkedDefinition = ref<string | null>(null)
+const definitionValid = ref(false)
+const syntaxErrors = computed(() => syntaxDiagnostics(definition.value))
+const diagnostics = computed(() =>
+  syntaxErrors.value.length
+    ? syntaxErrors.value
+    : checkedDefinition.value === definition.value
+      ? locateIssues(definition.value, definitionIssues.value)
+      : [],
+)
+const validationStale = computed(
+  () => checkedDefinition.value !== null && checkedDefinition.value !== definition.value,
+)
+async function validateDefinition() {
+  if (syntaxErrors.value.length) {
+    checkedDefinition.value = definition.value
+    definitionValid.value = false
+    definitionIssues.value = []
+    return false
+  }
+  const snapshot = definition.value
+  try {
+    await api('/rule-definitions/validate', { method: 'POST', body: snapshot })
+    if (snapshot !== definition.value) return false
+    checkedDefinition.value = snapshot
+    definitionIssues.value = []
+    definitionValid.value = true
+    return true
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.code !== 'invalid_rule_definition') throw e
+    if (snapshot === definition.value) {
+      checkedDefinition.value = snapshot
+      definitionValid.value = false
+      definitionIssues.value = e.issues.length
+        ? e.issues
+        : Object.entries(e.errors).flatMap(([path, messages]) =>
+            messages.map((message) => ({ code: e.code, path, message, hint: '' })),
+          )
+    }
+    return false
+  }
+}
 const tracked = useResource(
   (signal) => api<ImportJob>(`/jobs/${jobId.value}`, { signal }),
   (j) => active(j.status),
@@ -81,7 +132,12 @@ const tracked = useResource(
 )
 watch(tracked.data, (value) => {
   if (value)
-    job.value = { ...value, ruleVersionNumber: value.ruleVersionNumber ?? value.schemaVersion }
+    job.value = {
+      ...value,
+      acceptedRows:
+        (value.validRows ?? 0) + value.insertedRows + value.updatedRows + value.duplicateRows,
+      ruleVersionNumber: value.ruleVersionNumber ?? value.schemaVersion,
+    }
 })
 watch(tracked.error, (value) => {
   if (value) error.value = value
@@ -140,6 +196,7 @@ async function selectVersion(id: string) {
 }
 async function save(newSet: boolean) {
   await run(async () => {
+    if (!(await validateDefinition())) return
     const body = newSet
       ? { name: name.value, definition: JSON.parse(definition.value) }
       : {
@@ -147,10 +204,21 @@ async function save(newSet: boolean) {
           label: label.value || null,
           basedOnVersionId: selectedVersion.value || null,
         }
-    const version = await api<Version>(
-      newSet ? '/rule-sets' : `/rule-sets/${selectedSet.value}/versions`,
-      { method: 'POST', body: JSON.stringify(body) },
-    )
+    let version: Version
+    try {
+      version = await api<Version>(
+        newSet ? '/rule-sets' : `/rule-sets/${selectedSet.value}/versions`,
+        { method: 'POST', body: JSON.stringify(body) },
+      )
+    } catch (e) {
+      if (e instanceof ApiError && e.issues.length) {
+        checkedDefinition.value = definition.value
+        definitionValid.value = false
+        definitionIssues.value = e.issues
+        return
+      }
+      throw e
+    }
     await refresh()
     await loadVersions(version.ruleSetId)
     await selectVersion(version.id)
@@ -163,8 +231,9 @@ async function importJson(event: Event) {
     const value = input.files?.[0]
     if (!value) return
     if (value.size > 256 * 1024) throw new Error('Максимум 256 КиБ')
-    definition.value = JSON.stringify(JSON.parse(await value.text()), null, 2)
+    definition.value = await value.text()
     input.value = ''
+    await validateDefinition()
   })
 }
 async function access(action: string, method = 'PUT') {
@@ -182,7 +251,7 @@ async function poll(id: string) {
 }
 async function upload() {
   await run(async () => {
-    if (!file.value) throw new Error('Выберите CSV')
+    if (!file.value) throw new Error('Выберите CSV или XLSX')
     const form = new FormData()
     form.append('file', file.value)
     const accepted = await api<{ jobId: string }>(
@@ -286,13 +355,37 @@ onMounted(async () => {
           <label
             >Загрузить JSON<input type="file" accept=".json,application/json" @change="importJson"
           /></label>
-          <label>JSON правил<textarea v-model="definition" spellcheck="false" rows="17" /></label>
+          <p id="definition-label">JSON правил</p>
+          <RuleDefinitionEditor
+            ref="editor"
+            v-model="definition"
+            :diagnostics="diagnostics"
+            :disabled="busy"
+          />
+          <div v-if="diagnostics.length" class="definition-errors" role="alert">
+            <h3>Исправьте ошибки в определении: {{ diagnostics.length }}</h3>
+            <ul>
+              <li v-for="(issue, index) in diagnostics" :key="`${issue.path}-${index}`">
+                <strong v-if="issue.fieldName">Поле «{{ issue.fieldName }}»</strong>
+                <p>{{ issue.message }}</p>
+                <p v-if="issue.hint" class="hint">{{ issue.hint }}</p>
+                <button type="button" @click="editor?.focusIssue(issue)">
+                  Перейти к ошибке · {{ issue.path }} · строка
+                  {{ diagnosticPosition(definition, issue.from).line }}, столбец
+                  {{ diagnosticPosition(definition, issue.from).column }}
+                </button>
+              </li>
+            </ul>
+          </div>
+          <p v-else-if="validationStale" role="status">Определение изменено. Повторите проверку.</p>
+          <p v-else-if="definitionValid && checkedDefinition === definition" role="status">
+            Определение корректно
+          </p>
           <button
             :disabled="busy"
             @click="
               run(async () => {
-                await api('/rule-definitions/validate', { method: 'POST', body: definition })
-                message = 'Определение корректно'
+                await validateDefinition()
               })
             "
           >
@@ -377,11 +470,19 @@ onMounted(async () => {
         </button>
         <div v-if="job">
           <p>
-            {{ job.status }} · Версия {{ job.ruleVersionNumber }} · Проверено
-            {{ job.processedRows }} · Валидных {{ job.validRows }} · Ошибочных {{ job.invalidRows }}
+            {{ statuses[job.status] ?? job.status }} · Версия {{ job.ruleVersionNumber }} ·
+            Проверено {{ job.processedRows }} · Принято {{ job.acceptedRows }} · Ошибочных
+            {{ job.invalidRows }}
           </p>
-          <RouterLink :to="`/imports/${job.id}`">Открыть результаты и ошибки</RouterLink> ·
-          <a :href="`/api/v1/import-jobs/${job.id}/errors.csv`">Скачать ошибки CSV</a>
+          <p v-if="job.lastErrorCode" class="error">
+            Причина сбоя:
+            {{ jobErrorMessages[job.lastErrorCode] ?? '' }}
+            <code>{{ job.lastErrorCode }}</code>
+          </p>
+          <RouterLink :to="`/imports/${job.id}`">Открыть результаты и ошибки</RouterLink
+          ><template v-if="job.invalidRows">
+            · <a :href="`/api/v1/import-jobs/${job.id}/errors.csv`">Скачать ошибки CSV</a></template
+          >
         </div>
       </section>
     </template>
@@ -412,6 +513,7 @@ h1 {
   gap: 1rem;
 }
 .card {
+  min-width: 0;
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
   padding: 24px;
@@ -453,6 +555,27 @@ button:disabled {
 .error {
   color: var(--danger);
   white-space: pre-wrap;
+}
+.definition-errors {
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  padding: 12px;
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+.definition-errors h3 {
+  margin-top: 0;
+}
+.definition-errors p {
+  margin: 6px 0;
+}
+.definition-errors button {
+  text-align: left;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.hint {
+  color: var(--text-primary);
 }
 li {
   margin: 0.5rem 0;

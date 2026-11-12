@@ -248,6 +248,7 @@ public sealed class XlsxRowParserTests
     [InlineData("blank_header_cell", "empty_csv_header")]
     [InlineData("duplicate_header", "duplicate_csv_header")]
     [InlineData("duplicate_case_header", "duplicate_csv_header")]
+    [InlineData("duplicate_trimmed_header", "duplicate_csv_header")]
     [InlineData("unknown_header", "unknown_csv_header")]
     [InlineData("missing_header", "missing_csv_header")]
     public async Task InvalidHeaders_AreControlledFileRejections(string scenario, string expectedCode)
@@ -259,6 +260,7 @@ public sealed class XlsxRowParserTests
             "blank_header_cell" => XlsxTestBuilder.BuildSingleSheet(["externalId", "name", "email", "registeredAt", " "], []),
             "duplicate_header" => XlsxTestBuilder.BuildSingleSheet(["externalId", "name", "email", "registeredAt", "name"], []),
             "duplicate_case_header" => XlsxTestBuilder.BuildSingleSheet(["externalId", "name", "email", "registeredAt", "NAME"], []),
+            "duplicate_trimmed_header" => XlsxTestBuilder.BuildSingleSheet(["externalId", " name ", "email", "registeredAt", " NAME "], []),
             "unknown_header" => XlsxTestBuilder.BuildSingleSheet(["externalId", "name", "email", "registeredAt", "secretColumn"], []),
             _ => XlsxTestBuilder.BuildSingleSheet(["externalId", "name", "email", "isActive"], [])
         };
@@ -267,6 +269,64 @@ public sealed class XlsxRowParserTests
         Assert.Equal(expectedCode, exception.Code);
         Assert.Equal(1, exception.RowNumber);
         Assert.DoesNotContain("secretColumn", exception.ToString());
+    }
+
+    [Fact]
+    public async Task TrimmedHeaders_TrailingStyleOnlyCells_AndOoxmlRowBounds_AreHandledCleanly()
+    {
+        var styleOnly = new XlsxCellSpec(null, "s", StyleIndex: 0);
+        var sheet = new XlsxSheetSpec(
+            "Sheet1",
+            [
+                new(1,
+                [
+                    XlsxCellSpec.SharedString(" externalId "),
+                    XlsxCellSpec.InlineString(" name "),
+                    XlsxCellSpec.SharedString(" email "),
+                    XlsxCellSpec.SharedString("\tregisteredAt\t"),
+                    XlsxCellSpec.SharedString(" isActive "),
+                    styleOnly,
+                    styleOnly
+                ]),
+                new(2,
+                [
+                    XlsxCellSpec.SharedString(" ID-1 "),
+                    XlsxCellSpec.SharedString(" Alice "),
+                    XlsxCellSpec.SharedString("a@example.com"),
+                    XlsxCellSpec.IsoDate(" 2026-01-15 "),
+                    XlsxCellSpec.RawBoolean(" 1 "),
+                    styleOnly
+                ]),
+                new(3, [styleOnly, styleOnly, styleOnly, styleOnly, styleOnly, styleOnly])
+            ]);
+
+        var rows = await ReadAll(XlsxTestBuilder.BuildWorkbook([sheet]));
+        Assert.Equal(2, rows.Count);
+        Assert.False(rows[0].IsEmpty);
+        Assert.Empty(rows[0].Errors!);
+        Assert.Equal("2026-01-15", rows[0].Values["registeredAt"]);
+        Assert.Equal("true", rows[0].Values["isActive"]);
+        Assert.True(rows[1].IsEmpty);
+
+        var valid = new CustomerFileRowProcessor(Guid.NewGuid(), Schema()).Process(rows[0]);
+        Assert.True(valid.IsValid);
+        Assert.Equal("ID-1", valid.Customer!.ExternalId);
+
+        // Style-only cells beyond MaxColumns still trigger column_limit_exceeded
+        var colLimitEx = await Assert.ThrowsAsync<ImportFileException>(() =>
+            ReadAll(XlsxTestBuilder.BuildWorkbook([sheet]), new ImportProcessingOptions { MaxColumns = 6 }));
+        Assert.Equal("column_limit_exceeded", colLimitEx.Code);
+
+        // Row numbers above the Excel worksheet ceiling (1,048,576) are rejected as invalid syntax
+        var outOfBoundsSheet = new XlsxSheetSpec(
+            "Sheet1",
+            [
+                new(1, CustomerHeaders.Select(h => XlsxCellSpec.SharedString(h)).ToArray()),
+                new(1_048_577, [XlsxCellSpec.SharedString("ID-1")])
+            ]);
+        var rowBoundsEx = await Assert.ThrowsAsync<ImportFileException>(() =>
+            ReadAll(XlsxTestBuilder.BuildWorkbook([outOfBoundsSheet])));
+        Assert.Equal("invalid_xlsx_syntax", rowBoundsEx.Code);
     }
 
     [Fact]

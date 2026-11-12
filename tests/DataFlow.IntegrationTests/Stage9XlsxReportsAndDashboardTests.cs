@@ -18,6 +18,7 @@ using DataFlow.Infrastructure.Parsing;
 using DataFlow.Infrastructure.Rules;
 using DataFlow.IntegrationTests.Fixtures;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -225,6 +226,49 @@ public sealed class Stage9XlsxReportsAndDashboardTests(DataSourcesApiFixture fix
             Assert.Equal(csvRows[i].NaturalKey, xlsxRows[i].NaturalKey);
             Assert.Equal(csvRows[i].Errors, xlsxRows[i].Errors);
         }
+
+        await using var db = fixture.CreateContext();
+        var finishedOutbox = await db.OutboxMessages.AsNoTracking()
+            .Where(m => m.Type == "import.job.finished")
+            .ToListAsync();
+        var csvFinishedPayload = finishedOutbox
+            .Select(m => JsonDocument.Parse(m.Payload).RootElement.Clone())
+            .Single(p => p.GetProperty("jobId").GetGuid() == csvJobAccepted.JobId);
+        Assert.Equal(1, csvFinishedPayload.GetProperty("ValidRows").GetInt64());
+    }
+
+    [Fact]
+    public async Task UploadEndpoint_EnforcesImportMaxFileBytesForXlsx_BeforeWritingStorage()
+    {
+        var storage = new FileUploadsStage5Tests.FakeStorage();
+        await using var factory = fixture.WithWebHostBuilder(b =>
+        {
+            b.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Storage:MaxFileBytes"] = "65536",
+                ["Import:MaxFileBytes"] = "1024"
+            }));
+            b.ConfigureServices(s => s.Replace(ServiceDescriptor.Singleton<IFileStorage>(storage)));
+        });
+        using var client = factory.CreateClient(new() { BaseAddress = new("https://localhost") });
+        var source = await CreateCustomerSourceAsync(client, "XLSX Size Limit");
+
+        var options = await client.GetFromJsonAsync<JsonElement>("/api/v1/files/options");
+        Assert.Equal(65536, options.GetProperty("maxFileBytes").GetInt64());
+        Assert.Equal(1024, options.GetProperty("maxXlsxFileBytes").GetInt64());
+
+        var oversizedXlsx = MixedCustomerXlsx.Seed();
+        Assert.True(oversizedXlsx.Length > 1024 && oversizedXlsx.Length < 65536);
+
+        using var content = new MultipartFormDataContent();
+        content.Add(new ByteArrayContent(oversizedXlsx), "file", "oversized.xlsx");
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/data-sources/{source.Id}/files") { Content = content };
+        request.Headers.Add("Idempotency-Key", "oversized-xlsx");
+        using var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("file_too_large", problem.GetProperty("code").GetString());
+        Assert.Equal(0, storage.Uploads);
     }
 
     [Fact]
@@ -247,6 +291,7 @@ public sealed class Stage9XlsxReportsAndDashboardTests(DataSourcesApiFixture fix
             "@HYPERLINK(\"https://evil.example\")",
             "   =WEBSERVICE(\"https://evil.example\")",
             "\t+1",
+            "\n=1+1",
             "Line1,\r\n\"Quoted\""
         };
 
@@ -290,7 +335,8 @@ public sealed class Stage9XlsxReportsAndDashboardTests(DataSourcesApiFixture fix
         Assert.Equal("'@HYPERLINK(\"https://evil.example\")", rawItems[3]);
         Assert.Equal("'   =WEBSERVICE(\"https://evil.example\")", rawItems[4]);
         Assert.Equal("'\t+1", rawItems[5]);
-        Assert.Equal("Line1,\r\n\"Quoted\"", rawItems[6]);
+        Assert.Equal("'\n=1+1", rawItems[6]);
+        Assert.Equal("Line1,\r\n\"Quoted\"", rawItems[7]);
 
         // Another user or missing job must receive 404 Problem Details
         using var otherClient = fixture.CreateClient(new() { BaseAddress = new("https://localhost") });

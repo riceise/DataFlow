@@ -97,6 +97,23 @@ public sealed class ImportPipelineStage7Tests(DataSourcesApiFixture fixture) : I
         Assert.Equal(2, completed.TotalRows);
         Assert.Equal(7, completed.LastCommittedRowNumber);
         Assert.Equal(new[] { 3, 6 }, await database.ImportRows.Where(x => x.ImportJobId == job.Id).OrderBy(x => x.RowNumber).Select(x => x.RowNumber).ToArrayAsync());
+
+        // Thousands of trailing blank lines coalesce in memory without intermediate empty DB commits
+        var trailingBlanksJob = await SeedAsync(job.DataSourceId);
+        var committedCheckpoints = new List<long>();
+        var observing = new ObservingParser(new CsvRowParser(Options.Create(new ImportProcessingOptions())), async index =>
+        {
+            if (index is 501 or 1501)
+            {
+                await using var observed = fixture.CreateContext();
+                committedCheckpoints.Add((await observed.ImportJobs.SingleAsync(x => x.Id == trailingBlanksJob.Id)).LastCommittedRowNumber);
+            }
+        });
+        await RunAsync(trailingBlanksJob, Guid.NewGuid(), Header + Line(10) + new string('\n', 2000), observing);
+        var trailingCompleted = await database.ImportJobs.AsNoTracking().SingleAsync(x => x.Id == trailingBlanksJob.Id);
+        Assert.All(committedCheckpoints, cp => Assert.Equal(0, cp));
+        Assert.Equal(1, trailingCompleted.TotalRows);
+        Assert.Equal(2002, trailingCompleted.LastCommittedRowNumber);
     }
 
     [Theory]

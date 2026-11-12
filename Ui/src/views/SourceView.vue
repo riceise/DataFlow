@@ -27,7 +27,7 @@ async function toggle() {
     dialog.value?.close()
     await refresh()
   } catch (e) {
-    actionError.value = String(e)
+    actionError.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = false
   }

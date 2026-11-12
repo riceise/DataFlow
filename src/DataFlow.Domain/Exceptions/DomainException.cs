@@ -1,6 +1,6 @@
 namespace DataFlow.Domain.Exceptions;
 
-public sealed class DomainException : Exception
+public class DomainException : Exception
 {
     public DomainException(string code, string message)
         : base(message)

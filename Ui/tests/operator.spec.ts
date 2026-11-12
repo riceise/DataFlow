@@ -146,3 +146,82 @@ test('404 and keyboard-accessible login', async ({ page }) => {
   await page.keyboard.press('Tab')
   await expect(page.getByLabel('Пароль', { exact: true })).toBeFocused()
 })
+
+test('rule-backed source passes ruleSetVersionId and failed job displays readable error', async ({
+  page,
+}) => {
+  const sourceId = '22222222-2222-4222-8222-222222222222'
+  const versionId = '33333333-3333-4333-8333-333333333333'
+  const jobId = '44444444-4444-4444-8444-444444444444'
+  let capturedVersionId: string | null = null
+  await page.route('**/api/v1/**', async (route) => {
+    const request = route.request(),
+      url = new URL(request.url()),
+      path = url.pathname.replace('/api/v1', '')
+    const json = (data: unknown, status = 200) => route.fulfill({ status, json: data })
+    if (path === '/auth/me') return json({ id: 'user', email: 'operator@example.test' })
+    if (path === '/auth/antiforgery') return json({ token: 'test-token' })
+    if (path === '/files/options')
+      return json({ maxFileBytes: 52428800, maxXlsxFileBytes: 26214400, formats: ['Csv', 'Xlsx'] })
+    if (path === '/data-sources')
+      return json({
+        items: [
+          {
+            id: sourceId,
+            name: 'Табличный источник',
+            dataType: 'Tabular',
+            defaultRuleSetVersionId: versionId,
+            schema: { version: 1, keyFields: ['externalId'], csvDelimiter: ',', fields: [] },
+            schemaVersion: 1,
+            acceptedFormats: ['Csv', 'Xlsx'],
+            isActive: true,
+            updatedAt: '2026-11-10T12:00:00Z',
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 200,
+      })
+    if (path === `/data-sources/${sourceId}/files`) {
+      capturedVersionId = url.searchParams.get('ruleSetVersionId')
+      return json({ jobId, status: 'Queued' }, 202)
+    }
+    if (path === `/jobs/${jobId}`)
+      return json({
+        id: jobId,
+        dataSourceId: sourceId,
+        originalFileName: 'bad-headers.csv',
+        status: 'Failed',
+        schemaVersion: 1,
+        ruleSetName: 'Заказы',
+        ruleVersionNumber: 2,
+        createdAt: '2026-11-10T12:00:00Z',
+        totalRows: null,
+        processedRows: 0,
+        insertedRows: 0,
+        updatedRows: 0,
+        invalidRows: 0,
+        duplicateRows: 0,
+        validRows: 0,
+        canCancel: false,
+        canRetry: false,
+        cancelRequested: false,
+        lastErrorCode: 'unknown_csv_header',
+      })
+    if (path.endsWith('/rows')) return json({ items: [], total: 0, page: 1, pageSize: 25 })
+    return json({ title: `Unexpected ${path}` }, 404)
+  })
+  await page.goto(`/imports/new?sourceId=${sourceId}`)
+  await expect(page.getByText('XLSX — до 25 МиБ')).toBeVisible()
+  await page.getByLabel('Файл CSV или XLSX').setInputFiles({
+    name: 'bad-headers.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('badCol\n1\n'),
+  })
+  await page.getByRole('button', { name: 'Загрузить и начать импорт' }).click()
+  await expect(page.getByRole('heading', { name: 'bad-headers.csv' })).toBeVisible()
+  expect(capturedVersionId).toBe(versionId)
+  await expect(page.getByText('Ни одна строка не была сохранена.')).toBeVisible()
+  await expect(page.getByText(/В строке заголовков есть колонка/)).toBeVisible()
+  await expect(page.getByText('unknown_csv_header', { exact: true })).toBeVisible()
+})

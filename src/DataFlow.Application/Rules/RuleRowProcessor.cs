@@ -28,8 +28,8 @@ public sealed class RuleRowProcessor
         }
     }
 
-    public static DataSourceSchema ParserSchema(RuleDefinition definition) => new(1, [definition.Fields[0].Header ?? definition.Fields[0].Name],
-        definition.Fields.Select(f => new DataSourceFieldDefinition(f.Header ?? f.Name, f.Type, f.Required, f.MaxLength, f.Format, logicalName: f.Name)).ToArray(),
+    public static DataSourceSchema ParserSchema(RuleDefinition definition) => new(1, [(definition.Fields[0].Header ?? definition.Fields[0].Name).Trim()],
+        definition.Fields.Select(f => new DataSourceFieldDefinition((f.Header ?? f.Name).Trim(), f.Type, f.Required, f.MaxLength, f.Format, logicalName: f.Name)).ToArray(),
         definition.Csv.Delimiter, definition.Columns.Unknown == "ignore");
 
     public CustomerRowValidation Process(ParsedRow row)
@@ -43,23 +43,21 @@ public sealed class RuleRowProcessor
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         foreach (var field in _definition.Fields)
         {
-            var raw = row.Values.GetValueOrDefault(field.Header ?? field.Name)?.Trim();
+            var header = (field.Header ?? field.Name).Trim();
+            var raw = row.Values.GetValueOrDefault(header)?.Trim();
             var value = string.IsNullOrEmpty(raw) ? null : raw;
             values[field.Name] = value;
             void Error(string code, string message) => errors.Add(new(field.Name, code, message));
             if (value is null)
             {
                 if ((field.Required || _definition.KeyFields.Contains(field.Name)) &&
-                    !errors.Any(e => e.Field == field.Name || e.Field == (field.Header ?? field.Name)))
+                    !errors.Any(e => e.Field == field.Name || e.Field == header))
                 {
                     Error("required", "A value is required.");
                 }
 
                 continue;
             }
-            if (!RuleDefinitions.TryValue(field.Type, value, out var canonical))
-            { Error("invalid_type", $"A valid {field.Type} value is required."); continue; }
-            values[field.Name] = canonical;
             if (field.MinLength is { } min && value.Length < min)
             {
                 Error("min_length", "The value is too short.");
@@ -67,8 +65,22 @@ public sealed class RuleRowProcessor
 
             if (field.MaxLength is { } max && value.Length > max)
             {
-                Error("max_length", "The value is too long.");
+                Error("max_length", "The value exceeds the maximum length.");
             }
+
+            if (!RuleDefinitions.TryValue(field.Type, value, out var canonical))
+            {
+                var (typeCode, typeMessage) = field.Type switch
+                {
+                    "email" => ("invalid_email", "A valid email address is required."),
+                    "date" => ("invalid_date", "A valid date in yyyy-MM-dd format is required."),
+                    "boolean" => ("invalid_type", "A boolean value of true or false is required."),
+                    _ => ("invalid_type", $"A valid {field.Type} value is required.")
+                };
+                Error(typeCode, typeMessage);
+                continue;
+            }
+            values[field.Name] = canonical;
 
             if (field.Minimum is not null || field.Maximum is not null)
             {
@@ -109,7 +121,7 @@ public sealed class RuleRowProcessor
         }
         string? key = null;
         if (_definition.KeyFields.Length > 0 && _definition.KeyFields.All(k => values.GetValueOrDefault(k) is not null &&
-            !errors.Any(e => e.Field == k && e.Code is "invalid_type" or "required")))
+            !errors.Any(e => e.Field == k && e.Code is "invalid_type" or "invalid_email" or "invalid_date" or "required")))
         {
             var keyJson = JsonSerializer.Serialize(_definition.KeyFields.Select(k => new[] { k, values[k] }), RuleDefinitions.Json);
             key = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(keyJson)));

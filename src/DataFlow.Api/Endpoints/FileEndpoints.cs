@@ -24,8 +24,13 @@ public static class FileEndpoints
             Guid? dataSourceId = null, int page = 1, int pageSize = 25, string? status = null) =>
             Results.Ok(await dispatcher.DispatchAsync<ListJobsQuery, PagedResult<JobDto>>(new(dataSourceId, page, pageSize, status), ct)))
             .WithTags("Import jobs").Produces<PagedResult<JobDto>>().ProducesProblem(400);
-        secured.MapGet("/api/v1/files/options", (IOptions<StorageOptions> storage) =>
-            Results.Ok(new { storage.Value.MaxFileBytes, Formats = new[] { "Csv", "Xlsx" } }))
+        secured.MapGet("/api/v1/files/options", (IOptions<StorageOptions> storage, IOptions<ImportProcessingOptions> import) =>
+            Results.Ok(new
+            {
+                storage.Value.MaxFileBytes,
+                MaxXlsxFileBytes = Math.Min(storage.Value.MaxFileBytes, import.Value.MaxFileBytes),
+                Formats = new[] { "Csv", "Xlsx" }
+            }))
             .WithTags("Files");
         secured.MapPost("/api/v1/data-sources/{id:guid}/files", UploadAsync)
             .WithTags("Files").Produces<JobAcceptedDto>(202).ProducesProblem(400).ProducesProblem(404).ProducesProblem(409);
@@ -63,7 +68,8 @@ public static class FileEndpoints
         await JobErrorReportWriter.WriteErrorsCsvAsync(database, id, context.Response.Body, ct);
     }
 
-    private static async Task<IResult> UploadAsync(Guid id, HttpContext context, IDispatcher dispatcher, IOptions<StorageOptions> options)
+    private static async Task<IResult> UploadAsync(Guid id, HttpContext context, IDispatcher dispatcher,
+        IOptions<StorageOptions> options, IOptions<ImportProcessingOptions> importOptions)
     {
         var ct = context.RequestAborted;
         var header = context.Request.Headers["Idempotency-Key"];
@@ -74,6 +80,7 @@ public static class FileEndpoints
 
         var source = await dispatcher.DispatchAsync<GetDataSourceQuery, DataSourceDto>(new(id), ct);
         var settings = options.Value;
+        var importSettings = importOptions.Value;
         var sizeFeature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
         if (sizeFeature is { IsReadOnly: false })
         {
@@ -116,8 +123,8 @@ public static class FileEndpoints
                 }
 
                 fileName = HeaderUtilities.RemoveQuotes(disposition.FileNameStar.HasValue ? disposition.FileNameStar : disposition.FileName).Value;
-                fileName = fileName?.Replace('\\', '/').Split('/').Last();
-                if (string.IsNullOrWhiteSpace(fileName) || fileName.Length > 255)
+                fileName = fileName?.Replace('\\', '/').Split('/').Last().Trim();
+                if (string.IsNullOrWhiteSpace(fileName) || fileName.Length > 255 || fileName.Any(char.IsControl))
                 {
                     throw Error("invalid_file_name");
                 }
@@ -135,6 +142,9 @@ public static class FileEndpoints
                     throw Error("file_format_not_allowed");
                 }
 
+                var maxFileBytes = format == AcceptedFileFormat.Xlsx
+                    ? Math.Min(settings.MaxFileBytes, importSettings.MaxFileBytes)
+                    : settings.MaxFileBytes;
                 await using var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true);
                 using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 var buffer = new byte[65536];
@@ -142,10 +152,10 @@ public static class FileEndpoints
                 var prefixLength = 0;
                 long length = 0;
                 int read;
-                while ((read = await section.Body.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, Math.Min(buffer.Length, settings.MaxFileBytes - length) + 1)), ct)) > 0)
+                while ((read = await section.Body.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, Math.Min(buffer.Length, maxFileBytes - length) + 1)), ct)) > 0)
                 {
                     length += read;
-                    if (length > settings.MaxFileBytes)
+                    if (length > maxFileBytes)
                     {
                         throw Error("file_too_large");
                     }

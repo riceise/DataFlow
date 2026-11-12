@@ -21,6 +21,37 @@ namespace DataFlow.IntegrationTests;
 
 public sealed class RuleLibraryTests(DataSourcesApiFixture fixture) : IClassFixture<DataSourcesApiFixture>
 {
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("create")]
+    [InlineData("version")]
+    public async Task InvalidDefinitionReturnsActionableIssuesForValidationAndSaving(string action)
+    {
+        using var client = fixture.CreateClient(new() { BaseAddress = new("https://localhost") });
+        var definition = JsonSerializer.Deserialize<JsonElement>("""
+            {"fields":[{"name":"code"},{"name":"amount","type":"decimal","minimum":0},
+            {"name":"description","type":"string","minimum":1}]}
+            """);
+        var path = action switch
+        {
+            "validate" => "/api/v1/rule-definitions/validate",
+            "create" => "/api/v1/rule-sets",
+            _ => $"/api/v1/rule-sets/{Guid.NewGuid()}/versions"
+        };
+        using var response = action == "validate"
+            ? await client.PostAsJsonAsync(path, definition)
+            : await client.PostAsJsonAsync(path, new { name = "Invalid rules", definition });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType!.MediaType);
+        var problem = (await response.Content.ReadFromJsonAsync<JsonElement>());
+        Assert.Equal("invalid_rule_definition", problem.GetProperty("code").GetString());
+        var issue = Assert.Single(problem.GetProperty("issues").EnumerateArray());
+        Assert.Equal("fields[2].minimum", issue.GetProperty("path").GetString());
+        Assert.Equal("description", issue.GetProperty("fieldName").GetString());
+        Assert.Contains("minLength", issue.GetProperty("hint").GetString());
+        Assert.True(problem.GetProperty("errors").TryGetProperty("fields[2].minimum", out _));
+    }
+
     private static JsonElement Definition(int maximum = 10) => JsonSerializer.SerializeToElement(new
     {
         definitionFormatVersion = 1,

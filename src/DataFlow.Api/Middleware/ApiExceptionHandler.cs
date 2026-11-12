@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DataFlow.Application.Rules;
 using DataFlow.Application.Validation;
 using DataFlow.Domain.Exceptions;
 using Microsoft.AspNetCore.Diagnostics;
@@ -16,6 +17,12 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetails) :
 
         switch (exception)
         {
+            case RuleDefinitionValidationException definition:
+                status = StatusCodes.Status400BadRequest;
+                code = definition.Code;
+                errors = definition.Issues.GroupBy(issue => issue.Path)
+                    .ToDictionary(group => group.Key, group => group.Select(issue => $"{issue.Message} {issue.Hint}").ToArray());
+                break;
             case RequestValidationException validation:
                 status = StatusCodes.Status400BadRequest;
                 code = validation.Code;
@@ -72,10 +79,26 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetails) :
             Title = code switch
             {
                 "source_not_found" => "Data source was not found.",
+                "source_inactive" => "Data source is inactive.",
                 "job_not_found" => "Job was not found.",
                 "job_not_retryable" => "Job cannot be retried.",
                 "job_not_cancellable" => "Job cannot be cancelled.",
                 "idempotency_conflict" => "Idempotency key has different content.",
+                "upload_incomplete" => "Previous upload with this key has not completed.",
+                "invalid_idempotency_key" => "Idempotency-Key header is required and limited to 128 characters.",
+                "invalid_multipart" => "Multipart upload payload is invalid.",
+                "unexpected_form_field" => "Multipart upload must contain exactly one file.",
+                "invalid_file_name" => "File name is invalid.",
+                "file_format_not_allowed" => "File format is not allowed for this data source.",
+                "file_too_large" => "File exceeds the maximum allowed size.",
+                "empty_file" => "Uploaded file cannot be empty.",
+                "invalid_file_format" => "File content does not match the declared format.",
+                "rule_version_not_found" => "Rule version was not found.",
+                "rule_set_archived" => "Rule set is archived.",
+                "rule_type_mismatch" => "Rule set data type does not match the data source.",
+                "invalid_rule_definition" => "Rule definition is invalid.",
+                "revision_conflict" => "Rule set was modified concurrently.",
+                "share_recipient_not_found" => "Recipient user was not found.",
                 "invalid_schema" => "Data source schema is invalid.",
                 "validation_failed" => "Request validation failed.",
                 _ => status == 400 ? "File upload request is invalid." : "An unexpected error occurred."
@@ -83,6 +106,10 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetails) :
             Instance = httpContext.Request.Path
         };
         problem.Extensions["code"] = code;
+        if (exception is RuleDefinitionValidationException ruleValidation)
+        {
+            problem.Extensions["issues"] = ruleValidation.Issues;
+        }
         if (errors is not null)
         {
             problem.Extensions["errors"] = errors;
