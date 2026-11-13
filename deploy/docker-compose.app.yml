@@ -1,0 +1,109 @@
+x-app-environment: &app-environment
+  ASPNETCORE_ENVIRONMENT: Production
+  ASPNETCORE_URLS: http://+:8080
+  ConnectionStrings__DataFlow: Host=postgres;Port=5432;Database=${POSTGRES_DB:-dataflow};Username=${POSTGRES_USER:-dataflow};Password=${POSTGRES_PASSWORD:-dataflow_dev_password}
+  RabbitMq__Host: rabbitmq
+  RabbitMq__Port: 5672
+  RabbitMq__User: ${RABBITMQ_DEFAULT_USER:-dataflow}
+  RabbitMq__Password: ${RABBITMQ_DEFAULT_PASS:-dataflow_dev_password}
+  RabbitMq__VirtualHost: ${RABBITMQ_DEFAULT_VHOST:-/}
+  Storage__Endpoint: http://minio:9000
+  Storage__AccessKey: ${MINIO_ROOT_USER:-dataflow_minio}
+  Storage__SecretKey: ${MINIO_ROOT_PASSWORD:-dataflow_minio_password}
+  Storage__Bucket: ${STORAGE_BUCKET:-dataflow-imports}
+  Storage__TempDirectory: /data/uploads
+  Storage__CompletedFileRetentionDays: ${COMPLETED_FILE_RETENTION_DAYS:-0}
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_METRIC_EXPORT_INTERVAL: 15000
+
+services:
+  # Overrides allow a separate -p project to start with genuinely empty volumes.
+  postgres:
+    container_name: ${COMPOSE_PROJECT_NAME:-dataflow}-postgres
+  rabbitmq:
+    container_name: ${COMPOSE_PROJECT_NAME:-dataflow}-rabbitmq
+  minio:
+    container_name: ${COMPOSE_PROJECT_NAME:-dataflow}-minio
+
+  storage-init:
+    build: { context: .., dockerfile: tools/DataFlow.Migrator/Dockerfile }
+    environment: *app-environment
+    command: ["--init-storage"]
+    depends_on:
+      minio: { condition: service_healthy }
+    networks: [dataflow_internal]
+
+  migrate:
+    build: { context: .., dockerfile: tools/DataFlow.Migrator/Dockerfile }
+    environment:
+      ConnectionStrings__DataFlow: Host=postgres;Port=5432;Database=${POSTGRES_DB:-dataflow};Username=${POSTGRES_USER:-dataflow};Password=${POSTGRES_PASSWORD:-dataflow_dev_password}
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [dataflow_internal]
+
+  api:
+    build: { context: .., dockerfile: src/DataFlow.Api/Dockerfile }
+    restart: unless-stopped
+    environment:
+      <<: *app-environment
+      DataProtection__KeysPath: /data/keys
+    volumes:
+      - dataflow_api_keys:/data/keys
+      - dataflow_api_temp:/data/uploads
+    ports: ["127.0.0.1:${API_PORT:-5030}:8080"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      storage-init: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+      otel: { condition: service_started }
+    networks: [dataflow_internal]
+
+  worker:
+    build: { context: .., dockerfile: src/DataFlow.Worker/Dockerfile }
+    restart: unless-stopped
+    stop_grace_period: 35s
+    environment: *app-environment
+    ports: ["127.0.0.1:${WORKER_HEALTH_PORT:-5031}:8080"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      storage-init: { condition: service_completed_successfully }
+      rabbitmq: { condition: service_healthy }
+      otel: { condition: service_started }
+    networks: [dataflow_internal]
+
+  web:
+    build: { context: .., dockerfile: Ui/Dockerfile }
+    restart: unless-stopped
+    ports: ["127.0.0.1:${WEB_PORT:-8080}:8080"]
+    depends_on:
+      api: { condition: service_healthy }
+    networks: [dataflow_internal]
+
+  otel:
+    image: otel/opentelemetry-collector-contrib:0.140.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes: ["./otel-collector.yaml:/etc/otel/config.yaml:ro"]
+    networks: [dataflow_internal]
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/jaeger:2.13.0
+    ports: ["127.0.0.1:${JAEGER_PORT:-16686}:16686"]
+    networks: [dataflow_internal]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=15d"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - dataflow_prometheus:/prometheus
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"]
+    networks: [dataflow_internal]
+    restart: unless-stopped
+
+volumes:
+  dataflow_api_keys:
+  dataflow_api_temp:
+  dataflow_prometheus:

@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Text.Json;
 using DataFlow.Infrastructure.Configuration;
 using DataFlow.Infrastructure.Imports;
+using DataFlow.Infrastructure.Observability;
 using DataFlow.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,7 +17,7 @@ namespace DataFlow.Infrastructure.Messaging;
 public sealed class ImportConsumer(
     IServiceScopeFactory scopeFactory,
     IOptions<RabbitMqOptions> options,
-    ILogger<ImportConsumer> logger) : BackgroundService
+    ILogger<ImportConsumer> logger, WorkerReadiness? readiness = null) : BackgroundService
 {
     private readonly string _owner = $"consumer-{Environment.ProcessId}-{Guid.NewGuid():N}";
 
@@ -31,6 +33,7 @@ public sealed class ImportConsumer(
                 var interrupted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 session.Channel.ChannelShutdownAsync += (_, _) =>
                 {
+                    readiness?.SetConnected(false);
                     interrupted.TrySetResult();
                     return Task.CompletedTask;
                 };
@@ -38,6 +41,7 @@ public sealed class ImportConsumer(
                 var consumer = new AsyncEventingBasicConsumer(session.Channel);
                 consumer.UnregisteredAsync += (_, _) =>
                 {
+                    readiness?.SetConnected(false);
                     interrupted.TrySetResult();
                     return Task.CompletedTask;
                 };
@@ -45,6 +49,7 @@ public sealed class ImportConsumer(
                 {
                     try
                     {
+                        if (delivery.Redelivered) { DataFlowTelemetry.Redeliveries.Add(1); }
                         await GuardAsync(delivery.Body, stoppingToken);
                         await session.Channel.BasicAckAsync(delivery.DeliveryTag, multiple: false, stoppingToken);
                         logger.LogInformation("Import delivery acknowledged");
@@ -53,6 +58,7 @@ public sealed class ImportConsumer(
                     catch (Exception exception) { interrupted.TrySetException(exception); }
                 };
                 await session.Channel.BasicConsumeAsync(RabbitMqSession.Queue, autoAck: false, consumer, stoppingToken);
+                readiness?.SetConnected(true);
                 failures = 0;
                 await interrupted.Task.WaitAsync(stoppingToken);
             }
@@ -61,6 +67,7 @@ public sealed class ImportConsumer(
             {
                 logger.LogWarning("Import consumer unavailable ({ErrorType}); reconnecting with backoff", exception.GetType().Name);
             }
+            finally { readiness?.SetConnected(false); }
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(++failures, 5)))), stoppingToken);
@@ -96,7 +103,16 @@ public sealed class ImportConsumer(
             return;
         }
 
-        using var messageScope = logger.BeginScope(new Dictionary<string, object> { ["MessageId"] = envelope.MessageId });
+        using var activity = DataFlowTelemetry.Activities.StartActivity("import process", ActivityKind.Consumer,
+            DataFlowTelemetry.Parent(envelope.TraceParent, envelope.TraceState));
+        activity?.SetTag("messaging.system", "rabbitmq");
+        activity?.SetTag("messaging.message.id", envelope.MessageId);
+        using var messageScope = logger.BeginScope(new Dictionary<string, object>
+        {
+            ["MessageId"] = envelope.MessageId,
+            ["TraceId"] = Activity.Current?.TraceId.ToString() ?? string.Empty,
+            ["Attempt"] = envelope.Attempt
+        });
         using var scope = scopeFactory.CreateScope();
         var database = scope.ServiceProvider.GetRequiredService<DataFlowDbContext>();
         if (await database.ProcessedMessages.AnyAsync(x => x.MessageId == envelope.MessageId.ToString(), cancellationToken))
@@ -124,6 +140,9 @@ public sealed class ImportConsumer(
         }
 
         using var jobScope = logger.BeginScope(new Dictionary<string, object> { ["JobId"] = payload.JobId });
+        activity?.SetTag("job.id", payload.JobId);
+        activity?.SetTag("job.run_version", payload.RunVersion);
+        activity?.SetTag("messaging.delivery.attempt", envelope.Attempt);
         if (!await database.ImportJobs.AnyAsync(x => x.Id == payload.JobId && x.RunVersion == payload.RunVersion, cancellationToken))
         {
             logger.LogInformation("Missing job or stale import run ignored");

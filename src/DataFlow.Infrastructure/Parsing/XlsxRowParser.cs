@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.IO.Compression;
@@ -15,6 +16,8 @@ namespace DataFlow.Infrastructure.Parsing;
 
 public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : IXlsxRowParser
 {
+    private static readonly IReadOnlyDictionary<string, string?> EmptyValues = FrozenDictionary<string, string?>.Empty;
+
     private static readonly HashSet<int> BuiltInDateNumFmtIds =
     [
         14, 15, 16, 17, 18, 19, 20, 21, 22,
@@ -75,11 +78,11 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
                     throw new ImportFileException("empty_csv_header", "XLSX column names must not be empty.", 1);
                 }
 
-                while (expectedPhysicalRow < rowNumber)
+                if (expectedPhysicalRow < rowNumber)
                 {
-                    yield return new(expectedPhysicalRow, new Dictionary<string, string?>(), "[]", IsEmpty: true,
-                        LastPhysicalRowNumber: expectedPhysicalRow);
-                    expectedPhysicalRow++;
+                    yield return new(expectedPhysicalRow, EmptyValues, "[]", IsEmpty: true,
+                        LastPhysicalRowNumber: rowNumber - 1);
+                    expectedPhysicalRow = rowNumber;
                 }
 
                 var parsedCells = await ReadRowCellsAsync(reader, rowNumber, limits, sharedStrings, dateStyles, date1904, cancellationToken);
@@ -110,7 +113,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
 
                 if (IsRowEmpty(parsedCells, headers.Length))
                 {
-                    yield return new(rowNumber, new Dictionary<string, string?>(), "[]", IsEmpty: true,
+                    yield return new(rowNumber, EmptyValues, "[]", IsEmpty: true,
                         LastPhysicalRowNumber: rowNumber);
                     continue;
                 }

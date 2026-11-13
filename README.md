@@ -6,10 +6,21 @@
 ## Требования
 
 - .NET SDK 10.0.100 или более новый стабильный SDK 10.0 (см. `global.json`).
-- Node.js 24 LTS — для будущего Vue frontend.
+- Node.js 24 LTS (24.15+ для текущего lockfile) — для Vue frontend.
 - Docker Desktop с запущенным Linux engine — для PostgreSQL, RabbitMQ, MinIO и интеграционных тестов с Testcontainers.
 
 ## Локальная инфраструктура (Docker Compose)
+
+Для полного приложения (Web, API, Worker, миграции, приватный bucket, Jaeger и
+Prometheus) см. [инструкцию эксплуатации](deploy/OPERATIONS.md):
+
+```powershell
+docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.app.yml up -d --build --wait --wait-timeout 240
+```
+
+Web: `http://127.0.0.1:8080`; Jaeger: `http://127.0.0.1:16686`;
+Prometheus: `http://127.0.0.1:9090`. Сначала создайте `.env` по инструкции ниже.
+Для сквозной проверки запущенного Compose: `node tools/smoke-compose.mjs`.
 
 1. Скопируйте шаблон переменных окружения в локальный `.env` (файл `.env` исключён из Git):
 
@@ -95,6 +106,7 @@ dotnet run --project src/DataFlow.Api --launch-profile http
 ```
 
 - `http://localhost:5030/health/live` — `200 Healthy` (возвращает заголовок `X-Correlation-ID`).
+- `http://localhost:5030/health/ready` — зависимости PostgreSQL/схема, RabbitMQ и storage; безопасный JSON, 503 при отказе.
 - `http://localhost:5030/openapi/v1.json` — спецификация в Development.
 - `http://localhost:5030/scalar/v1` — интерактивный просмотр API в Development.
 - Для HTTPS сохранён профиль `https`: `https://localhost:7242` и `http://localhost:5030`.
@@ -104,6 +116,10 @@ Worker в отдельном терминале:
 ```powershell
 dotnet run --project src/DataFlow.Worker
 ```
+
+Worker предоставляет `/health/live` и `/health/ready` на `http://127.0.0.1:5031`;
+readiness дополнительно проверяет consumer. OTLP, метрики, retention и диагностика
+Failed/DLQ описаны в [deploy/OPERATIONS.md](deploy/OPERATIONS.md).
 
 Интерфейс оператора `Ui/` в отдельном терминале (Node LTS; подробности в `Ui/README.md`):
 
@@ -121,7 +137,7 @@ Dispatcher опрашивает outbox через `PeriodicTimer`: `Outbox:Batch
 
 Envelope имеет `contractVersion: "v1"`, `messageId` (outbox id), `type`, `occurredAt` (UTC), `attempt` (начиная с 1), `traceParent` и объект `payload` с `jobId`, `dataSourceId`, `schemaVersion`, `runVersion`. Версия контракта независима от версии схемы и версии запуска. Файлы и содержимое строк в RabbitMQ не передаются.
 
-Consumer использует manual ack и prefetch 1. Неподдерживаемая версия контракта, уже существующий `ProcessedMessage`, отсутствующий job и устаревший `RunVersion` подтверждаются без эффектов. Worker читает CSV из S3 построчно по snapshot схемы; ack отправляется после commit терминального job, `ProcessedMessage` и итогового outbox. Retry-очереди и DLQ появятся на этапе 8.
+Consumer использует manual ack и prefetch 1. Неподдерживаемая версия контракта, уже существующий `ProcessedMessage`, отсутствующий job и устаревший `RunVersion` подтверждаются без эффектов. Worker читает CSV/XLSX из S3 построчно по snapshot; ack отправляется после commit результата, `ProcessedMessage` и outbox. Retry-очереди 5/30/300 секунд и DLQ описаны в инструкции эксплуатации.
 
 ### Источники данных
 

@@ -73,6 +73,7 @@ public static class StorageExtensions
         services.AddScoped<IFileStorage, S3FileStorage>();
         services.AddScoped<IImportFileReader, S3FileStorage>();
         services.AddHostedService<OrphanCleanupService>();
+        services.AddHostedService<StorageMaintenanceService>();
         return services;
     }
 }

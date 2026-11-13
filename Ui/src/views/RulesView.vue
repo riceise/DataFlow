@@ -3,9 +3,10 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api, ApiError, type RuleDefinitionIssue } from '@/api'
 import { useAuth } from '@/stores/auth'
 import { useResource } from '@/composables/useResource'
-import { active, statuses, jobErrorMessages, type Job as ImportJob } from '@/models'
+import { active, number, statuses, jobErrorMessages, type Job as ImportJob } from '@/models'
 import { storeToRefs } from 'pinia'
 import PageHeader from '@/components/PageHeader.vue'
+import ResultBreakdown from '@/components/ResultBreakdown.vue'
 import RuleDefinitionEditor from '@/components/RuleDefinitionEditor.vue'
 import {
   diagnosticPosition,
@@ -34,8 +35,13 @@ type Source = { id: string; name: string }
 type Job = {
   id: string
   status: string
+  totalRows?: number | null
   processedRows: number
   acceptedRows: number
+  validRows: number
+  insertedRows: number
+  updatedRows: number
+  duplicateRows: number
   invalidRows: number
   ruleVersionNumber: number
   lastErrorCode?: string | null
@@ -131,13 +137,15 @@ const tracked = useResource(
   () => !!jobId.value,
 )
 watch(tracked.data, (value) => {
-  if (value)
+  if (value) {
+    const validRows = value.validRows ?? 0
     job.value = {
       ...value,
-      acceptedRows:
-        (value.validRows ?? 0) + value.insertedRows + value.updatedRows + value.duplicateRows,
+      validRows,
+      acceptedRows: validRows + value.insertedRows + value.updatedRows + value.duplicateRows,
       ruleVersionNumber: value.ruleVersionNumber ?? value.schemaVersion,
     }
+  }
 })
 watch(tracked.error, (value) => {
   if (value) error.value = value
@@ -475,12 +483,36 @@ onMounted(async () => {
         <button :disabled="busy || !selectedSource || !file" @click="upload">
           Начать проверку
         </button>
-        <div v-if="job">
+        <div v-if="job" class="job-summary">
           <p>
             {{ statuses[job.status] ?? job.status }} · Версия {{ job.ruleVersionNumber }} ·
-            Проверено {{ job.processedRows }} · Принято {{ job.acceptedRows }} · Ошибочных
-            {{ job.invalidRows }}
+            Проверено {{ number(job.processedRows)
+            }}<template v-if="job.totalRows !== null && job.totalRows !== undefined">
+              из {{ number(job.totalRows) }}</template
+            >
+            · Принято {{ number(job.acceptedRows) }} (<template
+              v-if="
+                job.validRows > 0 ||
+                (job.insertedRows === 0 && job.updatedRows === 0 && job.duplicateRows === 0)
+              "
+              >Валидно {{ number(job.validRows) }}</template
+            ><template v-if="job.insertedRows || job.updatedRows || job.duplicateRows"
+              ><template v-if="job.validRows > 0"> · </template>Добавлено
+              {{ number(job.insertedRows) }} · Обновлено {{ number(job.updatedRows) }} · Без
+              изменений {{ number(job.duplicateRows) }}</template
+            >) · Ошибочных {{ number(job.invalidRows) }}
           </p>
+          <ResultBreakdown
+            :inserted="job.insertedRows"
+            :updated="job.updatedRows"
+            :invalid="job.invalidRows"
+            :duplicate="job.duplicateRows"
+            :valid="job.validRows"
+            :show-valid="
+              job.validRows > 0 ||
+              (job.insertedRows === 0 && job.updatedRows === 0 && job.duplicateRows === 0)
+            "
+          />
           <p v-if="job.lastErrorCode" class="error">
             Причина сбоя:
             {{ jobErrorMessages[job.lastErrorCode] ?? '' }}
@@ -601,6 +633,67 @@ nav button[aria-pressed='true'] {
   background: var(--bg-selected);
   color: var(--accent);
   border-color: var(--accent);
+}
+
+/* Dark theme: the rules page leans on native controls, so the surfaces and
+   focus states need explicit help to stay legible on navy. */
+:root[data-theme='dark'] .rules-page .card {
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
+}
+
+:root[data-theme='dark'] .rules-page button {
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  border-color: var(--border-control);
+}
+
+:root[data-theme='dark'] .rules-page button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+:root[data-theme='dark'] .rules-page button:disabled {
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border-color: var(--border-subtle);
+}
+
+:root[data-theme='dark'] .rules-page nav button[aria-pressed='true'],
+:root[data-theme='dark'] .rules-page nav button[aria-pressed='true']:hover {
+  background: var(--bg-selected);
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 500;
+}
+
+:root[data-theme='dark'] .rules-page .definition-errors {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
+:root[data-theme='dark'] .rules-page .definition-errors button {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+:root[data-theme='dark'] .rules-page .definition-errors button:hover {
+  background: var(--danger);
+  color: var(--on-accent);
+}
+
+:root[data-theme='dark'] .rules-page .hint {
+  color: var(--text-muted);
+}
+
+:root[data-theme='dark'] .rules-page .error {
+  color: var(--danger);
+}
+
+:root[data-theme='dark'] .rules-page .card h3 {
+  color: var(--text-secondary);
 }
 @media (min-width: 1024px) {
   .rules-page {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using DataFlow.Application.Abstractions;
 using DataFlow.Application.Imports;
@@ -5,6 +6,7 @@ using DataFlow.Application.Rules;
 using DataFlow.Domain.Exceptions;
 using DataFlow.Domain.ValueObjects;
 using DataFlow.Infrastructure.Configuration;
+using DataFlow.Infrastructure.Observability;
 using DataFlow.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -22,6 +24,7 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
         if (snapshot.RunVersion != runVersion || snapshot.IsTerminal()) { return; }
         var lease = await store.AcquireAsync(jobId, runVersion, owner, options.Value.LeaseSeconds, cancellationToken, attempt)
             ?? throw new ImportLeaseUnavailableException();
+        var started = Stopwatch.GetTimestamp();
         var callerToken = cancellationToken;
         using var processing = CancellationTokenSource.CreateLinkedTokenSource(callerToken);
         using var heartbeatStop = new CancellationTokenSource();
@@ -67,6 +70,7 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
             var ruleProcessor = definition is null ? null : new RuleRowProcessor(snapshot.DataSourceId, definition, keys);
             var batch = new List<ImportBatchRow>(options.Value.BatchSize);
             var total = 0;
+            var lastCheckpoint = (int)snapshot.LastCommittedRowNumber;
             await using var stream = await storage.OpenReadAsync(snapshot.StorageKey, cancellationToken);
             var rows = isCsv
                 ? parser.ParseAsync(stream, schema, cancellationToken)
@@ -75,24 +79,24 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
             {
                 if (!row.IsEmpty) { total++; }
                 if (row.CheckpointRowNumber <= snapshot.LastCommittedRowNumber) { continue; }
+                lastCheckpoint = row.CheckpointRowNumber;
+                if (row.IsEmpty) { continue; }
                 if (batch.Count == 0 && await store.CancellationRequestedAsync(lease, cancellationToken))
                 {
                     throw new ImportCancellationRequestedException();
                 }
                 var validation = ruleProcessor is null ? processor!.Process(row) : ruleProcessor.Process(row);
-                if (row.IsEmpty && batch is [.., { Parsed.IsEmpty: true }])
-                {
-                    batch[^1] = new(row, validation);
-                    continue;
-                }
                 batch.Add(new(row, validation));
                 if (batch.Count < options.Value.BatchSize) { continue; }
-                await store.CommitBatchAsync(lease, batch, options.Value.LeaseSeconds, cancellationToken);
+                await store.CommitBatchAsync(lease, batch, options.Value.LeaseSeconds, cancellationToken, lastCheckpoint);
                 batch.Clear();
                 if (await store.CancellationRequestedAsync(lease, cancellationToken)) { throw new ImportCancellationRequestedException(); }
             }
-            if (batch.Count > 0) { await store.CommitBatchAsync(lease, batch, options.Value.LeaseSeconds, cancellationToken); }
-            await store.FinalizeAsync(lease, messageId, total, null, false, cancellationToken);
+            if (batch.Count > 0)
+            {
+                await store.CommitBatchAsync(lease, batch, options.Value.LeaseSeconds, cancellationToken, lastCheckpoint);
+            }
+            await store.FinalizeAsync(lease, messageId, total, null, false, cancellationToken, lastCheckpointRowNumber: lastCheckpoint);
             logger.LogInformation("Import completed with {TotalRows} data rows", total);
         }
         catch (ImportCancellationRequestedException)
@@ -116,12 +120,14 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
             };
             var retryable = exception is not (ImportFileException or DomainException);
             await store.FinalizeAsync(lease, messageId, null, code, retryable, cancellationToken, attempt);
-            logger.LogWarning(exception, "Import failed with {ErrorCode}; retryable: {Retryable}", code, retryable);
+            if (retryable) { DataFlowTelemetry.Errors.Add(1, new KeyValuePair<string, object?>("dependency", "import_io")); }
+            logger.LogWarning("Import failed with {ErrorCode}; retryable: {Retryable}; error type: {ErrorType}", code, retryable, exception.GetType().Name);
         }
         finally
         {
             await heartbeatStop.CancelAsync();
             await heartbeat;
+            DataFlowTelemetry.Duration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds);
         }
     }
 }

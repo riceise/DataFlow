@@ -7,9 +7,11 @@ using DataFlow.Application.Dispatching;
 using DataFlow.Application.Jobs;
 using DataFlow.Infrastructure.Configuration;
 using DataFlow.Infrastructure.Imports;
+using DataFlow.Infrastructure.Observability;
 using DataFlow.Infrastructure.Persistence;
 using DataFlow.Infrastructure.Storage;
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Scalar.AspNetCore;
 using Serilog;
@@ -30,6 +32,12 @@ builder.Host.UseSerilog((context, services, loggerConfiguration) =>
 builder.Services.AddDataFlowConfiguration(builder.Configuration);
 builder.Services.AddDataFlowPersistence();
 builder.Services.AddDataFlowStorage();
+builder.Services.AddDataFlowObservability(builder.Configuration, "DataFlow.Api");
+var protection = builder.Services.AddDataProtection().SetApplicationName("DataFlow");
+if (builder.Configuration["DataProtection:KeysPath"] is { Length: > 0 } keysPath)
+{
+    protection.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+}
 builder.Services.AddDataFlowApplication();
 builder.Services.AddScoped<DataFlow.Infrastructure.Rules.RuleLibraryService>();
 builder.Services.AddScoped<JobControlHandler>();
@@ -96,7 +104,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
-app.MapHealthChecks("/health/live");
+app.MapDataFlowHealth();
 app.MapAuthEndpoints();
 app.MapRuleEndpoints();
 app.MapRuleSourceEndpoints();

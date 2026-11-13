@@ -102,6 +102,7 @@ public static class FileEndpoints
         Directory.CreateDirectory(settings.TempDirectory);
         var temp = Path.Combine(settings.TempDirectory, Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32)));
         var receiving = true;
+        using var tempLease = new FileStream(temp + ".lock", FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
         try
         {
             var reader = new MultipartReader(boundary, context.Request.Body);
@@ -206,6 +207,8 @@ public static class FileEndpoints
             {
                 File.Delete(temp);
             }
+            tempLease.Dispose();
+            File.Delete(temp + ".lock");
         }
     }
 

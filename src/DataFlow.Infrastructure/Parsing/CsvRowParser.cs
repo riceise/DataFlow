@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -15,6 +16,8 @@ namespace DataFlow.Infrastructure.Parsing;
 
 public sealed class CsvRowParser(IOptions<ImportProcessingOptions> options) : ICsvRowParser
 {
+    private static readonly IReadOnlyDictionary<string, string?> EmptyValues = FrozenDictionary<string, string?>.Empty;
+
     public async IAsyncEnumerable<ParsedRow> ParseAsync(Stream stream, DataSourceSchema schema,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -56,7 +59,7 @@ public sealed class CsvRowParser(IOptions<ImportProcessingOptions> options) : IC
             cancellationToken.ThrowIfCancellationRequested();
             if (IsBlankRecord(record, schema.CsvDelimiter[0]))
             {
-                yield return new(record.StartRow, new Dictionary<string, string?>(), "[]", IsEmpty: true,
+                yield return new(record.StartRow, EmptyValues, "[]", IsEmpty: true,
                     LastPhysicalRowNumber: record.EndRow);
                 continue;
             }

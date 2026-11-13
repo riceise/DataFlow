@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text.Json;
 using DataFlow.Infrastructure.Configuration;
+using DataFlow.Infrastructure.Observability;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -37,10 +39,16 @@ public sealed class OutboxDispatcher(
                         IDisposable? jobScope = null;
                         try
                         {
+                            using var activity = DataFlowTelemetry.Activities.StartActivity("import publish", ActivityKind.Producer,
+                                DataFlowTelemetry.Parent(message.TraceParent, message.TraceState));
+                            activity?.SetTag("messaging.system", "rabbitmq");
+                            activity?.SetTag("messaging.message.id", message.Id);
                             var envelope = ImportMessageEnvelope.Create(message);
+                            activity?.SetTag("job.id", envelope.Payload.GetProperty("jobId").GetGuid());
                             jobScope = logger.BeginScope(new Dictionary<string, object>
                             {
-                                ["JobId"] = envelope.Payload.GetProperty("jobId").GetGuid()
+                                ["JobId"] = envelope.Payload.GetProperty("jobId").GetGuid(),
+                                ["TraceId"] = Activity.Current?.TraceId.ToString() ?? string.Empty
                             });
                             // The claim transaction has committed before connecting or publishing.
                             session ??= await RabbitMqSession.ConnectAsync(rabbitOptions.Value, publisher: true, stoppingToken);
@@ -55,6 +63,7 @@ public sealed class OutboxDispatcher(
                         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
                         catch (Exception exception)
                         {
+                            DataFlowTelemetry.Errors.Add(1, new KeyValuePair<string, object?>("dependency", "rabbitmq"));
                             logger.LogWarning("Outbox publication failed ({ErrorType})", exception.GetType().Name);
                             await store.MarkFailedAsync(message.Id, _owner, exception.GetType().Name, stoppingToken);
                             // Unattempted messages are released without incrementing their attempts.

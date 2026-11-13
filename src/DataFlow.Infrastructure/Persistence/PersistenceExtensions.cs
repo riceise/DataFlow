@@ -11,7 +11,8 @@ public static class PersistenceExtensions
     public static IServiceCollection AddDataFlowPersistence(this IServiceCollection services)
     {
         services.AddDbContext<DataFlowDbContext>((provider, options) =>
-            options.UseNpgsql(provider.GetRequiredService<IOptions<DatabaseOptions>>().Value.DataFlow));
+            options.UseNpgsql(provider.GetRequiredService<IOptions<DatabaseOptions>>().Value.DataFlow)
+                .AddInterceptors(new Observability.OutboxTraceInterceptor()));
         return services.AddScoped<IDataFlowDbContext>(provider => provider.GetRequiredService<DataFlowDbContext>());
     }
 }

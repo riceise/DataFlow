@@ -109,9 +109,9 @@ public sealed class RuleRowProcessor
         }
         if (_customer is not null)
         {
-            var result = _customer.Normalize(_sourceId, row with { Values = values });
+            var result = _customer.Normalize(_sourceId, row with { Values = values, Errors = errors });
             // Customer normalization preserves the historical NaturalKey and RowHash contracts.
-            result = result with { Errors = errors.Concat(result.Errors).Distinct().ToArray() };
+            result = result with { Errors = result.Errors.Distinct().ToArray() };
             if (result.Errors.Count != 0)
             {
                 result = result with { Customer = null, RowHash = null };
@@ -121,7 +121,7 @@ public sealed class RuleRowProcessor
         }
         string? key = null;
         if (_definition.KeyFields.Length > 0 && _definition.KeyFields.All(k => values.GetValueOrDefault(k) is not null &&
-            !errors.Any(e => e.Field == k && e.Code is "invalid_type" or "invalid_email" or "invalid_date" or "required")))
+            !errors.Any(e => e.Field == k && ImportRowKeyPolicy.BlocksKeyReservation(e.Code))))
         {
             var keyJson = JsonSerializer.Serialize(_definition.KeyFields.Select(k => new[] { k, values[k] }), RuleDefinitions.Json);
             key = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(keyJson)));

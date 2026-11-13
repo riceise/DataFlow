@@ -21,6 +21,7 @@ export class ApiError extends Error {
     public errors: Record<string, string[]> = {},
     public correlationId = '',
     public issues: RuleDefinitionIssue[] = [],
+    public detail = '',
   ) {
     super(message)
   }
@@ -57,26 +58,33 @@ http.interceptors.response.use(
         problem = {}
       }
     }
+    const status = response?.status ?? 0
     const code = typeof problem?.code === 'string' ? problem.code : ''
+    const detail = typeof problem?.detail === 'string' ? problem.detail.trim() : ''
+    const title = typeof problem?.title === 'string' ? problem.title.trim() : ''
     const mapped = code ? errorMessages[code] : undefined
+    const safeClientProblem = status > 0 && status < 500 ? detail || title : ''
     const message =
-      response?.status === 401
+      status === 401
         ? 'Необходимо войти в систему.'
         : mapped
           ? mapped
-          : response?.status === 404
-            ? 'Данные не найдены.'
-            : !response
-              ? 'Нет связи с сервером. Повторите запрос.'
-              : (problem?.title ?? 'Не удалось выполнить запрос.')
+          : status > 0 && status < 500 && detail
+            ? detail
+            : status === 404
+              ? 'Данные не найдены.'
+              : !response
+                ? 'Нет связи с сервером. Повторите запрос.'
+                : safeClientProblem || 'Не удалось выполнить запрос.'
     return Promise.reject(
       new ApiError(
         message,
-        response?.status ?? 0,
+        status,
         code,
         problem?.errors ?? {},
         response?.headers['x-correlation-id'] ?? '',
         Array.isArray(problem?.issues) ? problem.issues : [],
+        detail,
       ),
     )
   },

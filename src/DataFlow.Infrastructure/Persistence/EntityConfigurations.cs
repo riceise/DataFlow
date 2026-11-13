@@ -118,6 +118,8 @@ internal sealed class OutboxMessageConfiguration : IEntityTypeConfiguration<Outb
         builder.Property(message => message.Type).HasMaxLength(200).IsRequired();
         builder.Property(message => message.Payload).HasColumnType("jsonb").IsRequired();
         builder.Property(message => message.Owner).HasMaxLength(200);
+        builder.Property<string>("TraceParent").HasMaxLength(128);
+        builder.Property<string>("TraceState").HasMaxLength(512);
         builder.HasIndex(message => message.OccurredAt).HasFilter("published_at IS NULL")
             .HasDatabaseName("ix_outbox_messages_unpublished");
     }

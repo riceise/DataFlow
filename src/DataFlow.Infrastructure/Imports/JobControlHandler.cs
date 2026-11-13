@@ -1,15 +1,18 @@
+using System.Diagnostics;
 using DataFlow.Application.Abstractions;
 using DataFlow.Application.Dispatching;
 using DataFlow.Application.Jobs;
 using DataFlow.Domain.Enums;
 using DataFlow.Domain.Exceptions;
 using DataFlow.Infrastructure.Messaging;
+using DataFlow.Infrastructure.Observability;
 using DataFlow.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace DataFlow.Infrastructure.Imports;
 
-public sealed class JobControlHandler(DataFlowDbContext database, ICurrentUser currentUser) :
+public sealed class JobControlHandler(DataFlowDbContext database, ICurrentUser currentUser, ILogger<JobControlHandler>? logger = null) :
     ICommandHandler<RetryJobCommand, JobAcceptedDto>, ICommandHandler<CancelJobCommand, JobAcceptedDto>
 {
     public Task<JobAcceptedDto> HandleAsync(RetryJobCommand request, CancellationToken cancellationToken) =>
@@ -20,6 +23,13 @@ public sealed class JobControlHandler(DataFlowDbContext database, ICurrentUser c
 
     private async Task<JobAcceptedDto> ControlAsync(Guid id, bool retry, CancellationToken cancellationToken)
     {
+        using var activity = DataFlowTelemetry.Activities.StartActivity(retry ? "import manual retry" : "import cancel");
+        activity?.SetTag("job.id", id);
+        using var jobScope = logger?.BeginScope(new Dictionary<string, object>
+        {
+            ["JobId"] = id,
+            ["TraceId"] = Activity.Current?.TraceId.ToString() ?? string.Empty
+        });
         database.ChangeTracker.Clear();
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
         await database.Database.ExecuteSqlRawAsync("SET LOCAL statement_timeout = '10s'; SET LOCAL lock_timeout = '5s'", cancellationToken);
@@ -44,6 +54,8 @@ public sealed class JobControlHandler(DataFlowDbContext database, ICurrentUser c
         }
         await database.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
+        activity?.SetTag("job.run_version", job.RunVersion);
+        logger?.LogInformation("Import control committed: {Operation}; run {RunVersion}", retry ? "retry" : "cancel", job.RunVersion);
         return new(job.Id, job.Status.ToString());
     }
 }

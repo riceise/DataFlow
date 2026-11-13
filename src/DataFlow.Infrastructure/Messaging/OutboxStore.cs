@@ -3,7 +3,11 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DataFlow.Infrastructure.Messaging;
 
-public sealed record ClaimedOutbox(Guid Id, string Type, string Payload, DateTimeOffset OccurredAt, int Attempts);
+public sealed record ClaimedOutbox(Guid Id, string Type, string Payload, DateTimeOffset OccurredAt, int Attempts)
+{
+    public string? TraceParent { get; init; }
+    public string? TraceState { get; init; }
+}
 
 public sealed class OutboxStore(DataFlowDbContext database)
 {
@@ -20,7 +24,8 @@ public sealed class OutboxStore(DataFlowDbContext database)
             SET owner = {owner}, locked_until = now() + make_interval(secs => {leaseSeconds})
             FROM candidates WHERE message.id = candidates.id
             RETURNING message.id AS "Id", message.type AS "Type", message.payload::text AS "Payload",
-                      message.occurred_at AS "OccurredAt", message.attempts AS "Attempts"
+                      message.occurred_at AS "OccurredAt", message.attempts AS "Attempts",
+                      message.trace_parent AS "TraceParent", message.trace_state AS "TraceState"
             """).ToListAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return messages;

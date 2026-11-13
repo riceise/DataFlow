@@ -38,7 +38,7 @@ services:
     networks:
       - dataflow_internal
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping && (rabbitmqctl -q list_policies -p \"$${RABBITMQ_DEFAULT_VHOST:-/}\" name | grep -q '^dataflow-retry$$' || rabbitmqctl set_policy -p \"$${RABBITMQ_DEFAULT_VHOST:-/}\" --apply-to quorum_queues --priority 10 dataflow-retry '^imports\\.retry\\.' '{\"dead-letter-strategy\":\"at-least-once\",\"overflow\":\"reject-publish\"}')"]
       interval: 10s
       timeout: 5s
       retries: 10

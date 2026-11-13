@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,6 +8,7 @@ using DataFlow.Application.Dispatching;
 using DataFlow.Application.Jobs;
 using DataFlow.Domain.Entities;
 using DataFlow.Domain.Exceptions;
+using DataFlow.Infrastructure.Observability;
 using DataFlow.Infrastructure.Persistence;
 using DataFlow.Infrastructure.Rules;
 using Microsoft.EntityFrameworkCore;
@@ -20,6 +22,8 @@ public sealed class UploadFileHandler(DataFlowDbContext database, IFileStorage s
 {
     public async Task<JobAcceptedDto> HandleAsync(UploadFileCommand request, CancellationToken cancellationToken)
     {
+        using var activity = DataFlowTelemetry.Activities.StartActivity("import upload");
+        activity?.SetTag("data_source.id", request.DataSourceId);
         if (!await database.DataSources.AnyAsync(s => s.Id == request.DataSourceId && s.OwnerUserId == currentUser.UserId, cancellationToken))
         {
             throw new DomainException("source_not_found", "Data source was not found.");
@@ -36,6 +40,7 @@ public sealed class UploadFileHandler(DataFlowDbContext database, IFileStorage s
         var now = clock.GetUtcNow();
         var key = $"sources/{request.DataSourceId:N}/{now.ToString("yyyy'/'MM'/'dd", CultureInfo.InvariantCulture)}/{Guid.NewGuid():N}";
         var committed = false;
+        await using var objectLock = await StorageObjectLock.AcquireAsync(database.Database.GetConnectionString()!, key, true, cancellationToken);
         try
         {
             await storage.UploadAsync(key, request.FilePath, cancellationToken);
@@ -99,6 +104,12 @@ public sealed class UploadFileHandler(DataFlowDbContext database, IFileStorage s
             }
 
             var job = ImportJob.Create(source.Id, request.FileName, key, request.FileSha256, source.SchemaJson, source.SchemaVersion, now);
+            activity?.SetTag("job.id", job.Id);
+            using var jobScope = logger.BeginScope(new Dictionary<string, object>
+            {
+                ["JobId"] = job.Id,
+                ["TraceId"] = Activity.Current?.TraceId.ToString() ?? string.Empty
+            });
             if (selectedVersion is not null)
             {
                 job.PinRules(selectedVersion.Id, selectedVersion.RuleDocumentId, fingerprint, ruleSet!.Name, selectedVersion.VersionNumber);
@@ -119,6 +130,7 @@ public sealed class UploadFileHandler(DataFlowDbContext database, IFileStorage s
             cancellationToken.ThrowIfCancellationRequested();
             await transaction.CommitAsync(cancellationToken);
             committed = true;
+            logger.LogInformation("Import upload accepted");
             return new(job.Id, job.Status.ToString());
         }
         catch (DbUpdateException ex) when (ex.InnerException is PostgresException

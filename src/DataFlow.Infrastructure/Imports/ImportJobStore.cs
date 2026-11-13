@@ -3,6 +3,7 @@ using DataFlow.Application.Imports;
 using DataFlow.Domain.Entities;
 using DataFlow.Domain.Enums;
 using DataFlow.Infrastructure.Messaging;
+using DataFlow.Infrastructure.Observability;
 using DataFlow.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -43,8 +44,13 @@ public sealed class ImportJobStore(DataFlowDbContext database)
         return versions.Count == 0 ? null : new(jobId, runVersion, owner, versions[0]);
     }
 
-    public async Task CommitBatchAsync(ImportLease lease, IReadOnlyList<ImportBatchRow> rows, int leaseSeconds, CancellationToken cancellationToken)
+    public async Task CommitBatchAsync(ImportLease lease, IReadOnlyList<ImportBatchRow> rows, int leaseSeconds,
+        CancellationToken cancellationToken, int? checkpointRowNumber = null)
     {
+        if (rows.Count > 0 && checkpointRowNumber is null && rows.All(r => r.Validation.IsEmpty))
+        {
+            return;
+        }
         database.ChangeTracker.Clear();
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
         await SetTimeoutsAsync(cancellationToken);
@@ -65,18 +71,24 @@ public sealed class ImportJobStore(DataFlowDbContext database)
                 row.Validation.NaturalKey, row.Validation.Errors, processedAt, row.Validation.RowHash));
         }
         var now = await VerifyAsync(job, lease, cancellationToken);
-        job.RecordBatchCompletion(rows[^1].Parsed.CheckpointRowNumber, counts[1], counts[2], counts[3], counts[4], now, counts[5]);
+        var targetCheckpoint = checkpointRowNumber ?? rows[^1].Parsed.CheckpointRowNumber;
+        job.RecordBatchCompletion(targetCheckpoint, counts[1], counts[2], counts[3], counts[4], now, counts[5]);
         job.RenewLease(lease.Owner, now, leaseSeconds, lease.Version);
         await database.SaveChangesAsync(cancellationToken);
         // Check the database clock again after all writes, while retaining the job lock.
         await VerifyAsync(job, lease, cancellationToken);
         if (await NowAsync(cancellationToken) >= deadline) { throw new ImportLeaseUnavailableException(); }
         await transaction.CommitAsync(cancellationToken);
+        for (var i = 1; i < counts.Length; i++)
+        {
+            DataFlowTelemetry.Rows.Add(counts[i], new KeyValuePair<string, object?>("outcome", ((ImportRowStatus)i).ToString()));
+        }
         database.ChangeTracker.Clear();
     }
 
     public async Task FinalizeAsync(ImportLease lease, Guid messageId, int? totalRows,
-        string? failureCode, bool retryable, CancellationToken cancellationToken, int attempt = 1)
+        string? failureCode, bool retryable, CancellationToken cancellationToken, int attempt = 1,
+        int? lastCheckpointRowNumber = null)
     {
         database.ChangeTracker.Clear();
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
@@ -98,6 +110,10 @@ public sealed class ImportJobStore(DataFlowDbContext database)
         }
         else
         {
+            if (lastCheckpointRowNumber is int checkpoint && checkpoint > job.LastCommittedRowNumber)
+            {
+                job.RecordBatchCompletion(checkpoint, 0, 0, 0, 0, now);
+            }
             job.SetTotalRows(totalRows!.Value, now);
             job.Complete(now);
         }
@@ -121,6 +137,13 @@ public sealed class ImportJobStore(DataFlowDbContext database)
         // Terminal transitions clear the lease in the entity; verify the captured deadline.
         if (await NowAsync(cancellationToken) >= deadline) { throw new ImportLeaseUnavailableException(); }
         await transaction.CommitAsync(cancellationToken);
+        if (job.Status == ImportJobStatus.RetryScheduled) { DataFlowTelemetry.Retries.Add(1); }
+        System.Diagnostics.Activity.Current?.SetTag("job.status", job.Status.ToString());
+        if (failureCode is not null)
+        {
+            System.Diagnostics.Activity.Current?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, failureCode);
+            System.Diagnostics.Activity.Current?.SetTag("error.type", failureCode);
+        }
         database.ChangeTracker.Clear();
     }
 

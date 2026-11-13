@@ -116,7 +116,7 @@ public sealed class CustomerRowNormalizer
         // must reserve the key for duplicate detection and eventual resume.
         string? naturalKey = null;
         if (_schema.KeyFields.All(field => values.GetValueOrDefault(field) is not null &&
-            !errors.Any(error => error.Field == field && error.Code != "max_length")))
+            !errors.Any(error => error.Field == field && ImportRowKeyPolicy.BlocksKeyReservation(error.Code))))
         {
             naturalKey = RowCanonicalizer.BuildNaturalKey(dataSourceId, _schema.KeyFields, data);
         }

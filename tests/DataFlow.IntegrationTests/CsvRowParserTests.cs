@@ -143,7 +143,7 @@ public sealed class CsvRowParserTests
     [Fact]
     public async Task HeaderCellsWithSurroundingWhitespace_AreTrimmed_WhileDataRawCellsKeepOriginalWhitespace()
     {
-        var csv = " externalId , \"name\" , \" email \" ,\tregisteredAt\t, isActive \r\n ID-1 , Alice ,a@example.com,2024-02-29,true";
+        var csv = " externalId ,\"name\",\" email \",\tregisteredAt\t, isActive \r\n ID-1 , Alice ,a@example.com,2024-02-29,true";
         var row = Assert.Single(await ReadAll(csv));
         Assert.Empty(row.Errors!);
         Assert.Equal(" ID-1 ", row.Values["externalId"]);
@@ -181,6 +181,7 @@ public sealed class CsvRowParserTests
     [InlineData("ID-1,\"private email,a@b.com,,true")]
     [InlineData("ID-1,A\"private email,a@b.com,,true")]
     [InlineData("ID-1,\"private email\"x,a@b.com,,true")]
+    [InlineData("ID-1, \"private email\",a@b.com,,true")]
     public async Task InvalidQuoting_IsSafeFileRejection(string malformed)
     {
         var exception = await Assert.ThrowsAsync<ImportFileException>(() => ReadAll(Header + "\n" + malformed));

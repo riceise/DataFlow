@@ -29,4 +29,11 @@ public sealed class StorageOptions
     public int OrphanAgeSeconds { get; init; } = 86400;
     [Range(1, 86400)]
     public int CleanupIntervalSeconds { get; init; } = 300;
+    // 0 keeps referenced originals indefinitely. Retryable Failed jobs are always retained.
+    [Range(0, 36500)]
+    public int CompletedFileRetentionDays { get; init; }
+    [Range(3600, 31536000)]
+    public int TempGraceSeconds { get; init; } = 86400;
+    [Range(1, 1000)]
+    public int CleanupBatchSize { get; init; } = 100;
 }

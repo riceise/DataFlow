@@ -114,6 +114,26 @@ public sealed class ImportPipelineStage7Tests(DataSourcesApiFixture fixture) : I
         Assert.All(committedCheckpoints, cp => Assert.Equal(0, cp));
         Assert.Equal(1, trailingCompleted.TotalRows);
         Assert.Equal(2002, trailingCompleted.LastCommittedRowNumber);
+
+        // Exact batch boundary (500 data rows) followed by trailing blanks does not open an extra batch transaction,
+        // and interleaved blank lines do not consume batch capacity slots.
+        var boundaryJob = await SeedAsync(job.DataSourceId);
+        var batchLeaseVersions = new List<int>();
+        var boundaryObserver = new ObservingParser(new CsvRowParser(Options.Create(new ImportProcessingOptions())), async index =>
+        {
+            if (index is 1000 or 1003)
+            {
+                await using var observed = fixture.CreateContext();
+                batchLeaseVersions.Add((await observed.ImportJobs.SingleAsync(x => x.Id == boundaryJob.Id)).ProcessedRows is var p ? (int)p : 0);
+            }
+        });
+        var interleaved500 = string.Concat(Enumerable.Range(100, 500).Select(n => "\n" + Line(n))) + "\n\n\n";
+        await RunAsync(boundaryJob, Guid.NewGuid(), Header + interleaved500, boundaryObserver);
+        var boundaryCompleted = await database.ImportJobs.AsNoTracking().SingleAsync(x => x.Id == boundaryJob.Id);
+        Assert.Equal(new[] { 0, 500 }, batchLeaseVersions);
+        Assert.Equal(500, boundaryCompleted.TotalRows);
+        Assert.Equal(500, boundaryCompleted.ProcessedRows);
+        Assert.Equal(1004, boundaryCompleted.LastCommittedRowNumber);
     }
 
     [Theory]

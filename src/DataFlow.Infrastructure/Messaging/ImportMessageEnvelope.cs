@@ -14,6 +14,7 @@ public sealed record ImportMessageEnvelope(
     string TraceParent,
     JsonElement Payload)
 {
+    public string? TraceState { get; init; }
     public const string SupportedVersion = "v1";
 
     public static JsonSerializerOptions JsonOptions { get; } = CreateJsonOptions();
@@ -21,8 +22,9 @@ public sealed record ImportMessageEnvelope(
     public static ImportMessageEnvelope Create(ClaimedOutbox message) => new(
         SupportedVersion, message.Id, message.Type, message.OccurredAt.ToUniversalTime(),
         JsonSerializer.Deserialize<JsonElement>(message.Payload, JsonOptions).TryGetProperty("attempt", out var attempt)
-            ? attempt.GetInt32() : 1, Activity.Current?.Id ?? string.Empty,
-        JsonSerializer.Deserialize<JsonElement>(message.Payload, JsonOptions));
+             ? attempt.GetInt32() : 1, Activity.Current?.Id ?? message.TraceParent ?? string.Empty,
+        JsonSerializer.Deserialize<JsonElement>(message.Payload, JsonOptions))
+    { TraceState = Activity.Current?.TraceStateString ?? message.TraceState };
 
     private static JsonSerializerOptions CreateJsonOptions()
     {

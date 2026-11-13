@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -9,6 +10,7 @@ using DataFlow.Application.Jobs;
 using DataFlow.Infrastructure.Configuration;
 using DataFlow.Infrastructure.Imports;
 using DataFlow.Infrastructure.Messaging;
+using DataFlow.Infrastructure.Observability;
 using DataFlow.Infrastructure.Persistence;
 using DataFlow.Infrastructure.Storage;
 using DataFlow.IntegrationTests.Fixtures;
@@ -48,6 +50,14 @@ public sealed class CsvEndToEndStage7Tests(DataSourcesApiFixture postgres, Rabbi
     [InlineData(500)]
     public async Task MixedThousandRows_UploadOutboxRabbitWorkerRowsAndCustomers_AgreeWithFixture(int batchSize)
     {
+        var spans = new ConcurrentQueue<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == DataFlowTelemetry.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = spans.Enqueue
+        };
+        ActivitySource.AddActivityListener(listener);
         var bucket = $"imports-{Guid.NewGuid():N}";
         var configuration = Configuration(bucket, batchSize);
         await using var api = postgres.WithWebHostBuilder(builder => builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(configuration)));
@@ -139,6 +149,18 @@ public sealed class CsvEndToEndStage7Tests(DataSourcesApiFixture postgres, Rabbi
             var storedJob = await db.ImportJobs.AsNoTracking().SingleAsync(x => x.Id == accepted.JobId);
             Assert.Equal(1001, storedJob.LastCommittedRowNumber);
             var message = await RequestedMessageAsync(db, accepted.JobId);
+            var uploadSpan = Assert.Single(spans, a => a.OperationName == "import upload" &&
+                a.GetTagItem("job.id")?.ToString() == accepted.JobId.ToString());
+            var consumerSpan = Assert.Single(spans, a => a.OperationName == "import process" &&
+                a.GetTagItem("job.id")?.ToString() == accepted.JobId.ToString());
+            var producerSpan = Assert.Single(spans, a => a.OperationName == "import publish" &&
+                a.GetTagItem("messaging.message.id")?.ToString() == message.Id.ToString());
+            Assert.Equal(uploadSpan.TraceId, producerSpan.TraceId);
+            Assert.Equal(producerSpan.SpanId, consumerSpan.ParentSpanId);
+            Assert.Equal(uploadSpan.TraceId, consumerSpan.TraceId);
+            var persistedParent = await db.OutboxMessages.Where(m => m.Id == message.Id)
+                .Select(m => EF.Property<string?>(m, "TraceParent")).SingleAsync();
+            Assert.Equal(uploadSpan.Id, persistedParent);
             Assert.NotNull(message.PublishedAt);
             var inbox = await db.ProcessedMessages.SingleAsync(x => x.JobId == accepted.JobId);
             Assert.Equal(message.Id.ToString(), inbox.MessageId);

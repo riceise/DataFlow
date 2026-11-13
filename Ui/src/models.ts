@@ -58,6 +58,8 @@ export const errorMessages: Record<string, string> = {
   invalid_rule_definition: 'Определение правил некорректно.',
   revision_conflict: 'Набор правил был изменён параллельно. Обновите страницу.',
   share_recipient_not_found: 'Пользователь с указанным email не найден.',
+  invalid_schema: 'Схема источника данных некорректна.',
+  invalid_antiforgery_token: 'Сессия защиты формы устарела. Обновите страницу и повторите действие.',
 }
 export const jobErrorMessages: Record<string, string> = {
   empty_file: 'В файле отсутствует строка заголовков.',

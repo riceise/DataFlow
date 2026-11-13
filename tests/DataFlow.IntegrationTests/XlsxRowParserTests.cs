@@ -327,6 +327,31 @@ public sealed class XlsxRowParserTests
         var rowBoundsEx = await Assert.ThrowsAsync<ImportFileException>(() =>
             ReadAll(XlsxTestBuilder.BuildWorkbook([outOfBoundsSheet])));
         Assert.Equal("invalid_xlsx_syntax", rowBoundsEx.Code);
+
+        // Max OOXML sparse jump (row 1 -> row 1,048,576) coalesces the entire gap into a single range ParsedRow
+        var sparseSheet = new XlsxSheetSpec(
+            "Sheet1",
+            [
+                new(1, CustomerHeaders.Select(h => XlsxCellSpec.SharedString(h)).ToArray()),
+                new(1_048_576,
+                [
+                    XlsxCellSpec.SharedString("ID-MAX"),
+                    XlsxCellSpec.SharedString("Sparse"),
+                    XlsxCellSpec.SharedString("sparse@example.com"),
+                    XlsxCellSpec.IsoDate("2026-01-15"),
+                    XlsxCellSpec.Boolean(true)
+                ])
+            ]);
+        var sparseRows = await ReadAll(
+            XlsxTestBuilder.BuildWorkbook([sparseSheet]),
+            new ImportProcessingOptions { MaxRows = 1 });
+        Assert.Equal(2, sparseRows.Count);
+        Assert.True(sparseRows[0].IsEmpty);
+        Assert.Equal(2, sparseRows[0].RowNumber);
+        Assert.Equal(1_048_575, sparseRows[0].CheckpointRowNumber);
+        Assert.False(sparseRows[1].IsEmpty);
+        Assert.Equal(1_048_576, sparseRows[1].RowNumber);
+        Assert.Equal(1_048_576, sparseRows[1].CheckpointRowNumber);
     }
 
     [Fact]

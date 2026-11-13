@@ -140,4 +140,61 @@ public sealed class RuleDefinitionTests
         Assert.Single(result.Errors, e => e.Field == "registeredAt" && e.Code == "invalid_date");
         Assert.Single(result.Errors, e => e.Field == "isActive" && e.Code == "invalid_type");
     }
+
+    [Fact]
+    public void KeyReservationPolicy_IsConsistentBetweenCustomerAndTabularRules()
+    {
+        var customerDef = RuleDefinitions.Parse(JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "dataType": "Customer",
+              "keyFields": ["externalId"],
+              "fields": [
+                {"name": "externalId", "type": "string", "required": true, "minLength": 5, "maxLength": 8, "regexPattern": "^ID-[0-9]+$"},
+                {"name": "name", "type": "string", "required": true, "maxLength": 40},
+                {"name": "email", "type": "email", "required": true, "maxLength": 254},
+                {"name": "isActive", "type": "boolean", "required": true}
+              ]
+            }
+            """)).Definition;
+
+        var tabularDef = RuleDefinitions.Parse(JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "dataType": "Tabular",
+              "keyFields": ["externalId"],
+              "fields": [
+                {"name": "externalId", "type": "string", "required": true, "minLength": 5, "maxLength": 8, "regexPattern": "^ID-[0-9]+$"},
+                {"name": "name", "type": "string", "required": true, "maxLength": 40},
+                {"name": "email", "type": "email", "required": true, "maxLength": 254},
+                {"name": "isActive", "type": "boolean", "required": true}
+              ]
+            }
+            """)).Definition;
+
+        var customerProc = new RuleRowProcessor(Guid.NewGuid(), customerDef, []);
+        var tabularProc = new RuleRowProcessor(Guid.NewGuid(), tabularDef, []);
+
+        static ParsedRow MakeRow(string? id, IReadOnlyList<DataFlow.Domain.ValueObjects.ImportRowError>? errors = null) =>
+            new(2, new Dictionary<string, string?>
+            {
+                ["externalId"] = id,
+                ["name"] = "Alice",
+                ["email"] = "a@example.com",
+                ["isActive"] = "true"
+            }, "[]", Errors: errors);
+
+        // Constraint errors (min_length, pattern_mismatch, max_length) still reserve the parsed key in both modes
+        var custConstraint = customerProc.Process(MakeRow("BAD"));
+        var tabConstraint = tabularProc.Process(MakeRow("BAD"));
+        Assert.NotNull(custConstraint.NaturalKey);
+        Assert.NotNull(tabConstraint.NaturalKey);
+        Assert.Contains(customerProc.Process(MakeRow("BAD")).Errors, e => e.Code == "duplicate_key_in_file");
+        Assert.Contains(tabularProc.Process(MakeRow("BAD")).Errors, e => e.Code == "duplicate_key_in_file");
+
+        // Parser formula/unsupported errors on the key field block key reservation in both modes (even if a raw text existed)
+        var formulaErr = new[] { new DataFlow.Domain.ValueObjects.ImportRowError("externalId", "formula_cell_not_supported", "Formula.") };
+        var custFormula = customerProc.Process(MakeRow("ID-999", formulaErr));
+        var tabFormula = tabularProc.Process(MakeRow("ID-999", formulaErr));
+        Assert.Null(custFormula.NaturalKey);
+        Assert.Null(tabFormula.NaturalKey);
+    }
 }
