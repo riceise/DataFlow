@@ -80,6 +80,28 @@ public sealed class RowCanonicalizerTests
     }
 
     [Fact]
+    public void Keys_AreCaseSensitiveByDesign()
+    {
+        var upper = RowCanonicalizer.BuildNaturalKey(Source, ["externalId"],
+            new NormalizedCustomerData("ABC-001", "Alice", "A@example.com", null, false));
+        var lower = RowCanonicalizer.BuildNaturalKey(Source, ["externalId"],
+            new NormalizedCustomerData("abc-001", "Alice", "A@example.com", null, false));
+
+        // ADR-001: trim only — case folding and Unicode normalization are not applied.
+        Assert.Equal(CustomerNaturalKey.Build(Source, "ABC-001"), upper);
+        Assert.Equal(upper, RowCanonicalizer.BuildNaturalKey(Source, ["externalId"],
+            new NormalizedCustomerData(" ABC-001 ", "Alice", "A@example.com", null, false)));
+        Assert.NotEqual(upper, lower);
+
+        var compositeUpper = RowCanonicalizer.BuildNaturalKey(Source, ["externalId", "name"],
+            new NormalizedCustomerData("abc-001", "Alice", "A@example.com", null, false));
+        var compositeLower = RowCanonicalizer.BuildNaturalKey(Source, ["externalId", "name"],
+            new NormalizedCustomerData("abc-001", "alice", "A@example.com", null, false));
+        Assert.NotEqual(compositeUpper, compositeLower);
+        Assert.StartsWith($"sha256:{Source:N}:", compositeUpper);
+    }
+
+    [Fact]
     public void CompositeKeys_AreUnambiguousOrderIndependentAndBounded()
     {
         var first = new NormalizedCustomerData("a:b", "c", "A@example.com", null, false);

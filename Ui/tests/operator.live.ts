@@ -14,6 +14,7 @@ test('real cookie/CSRF session and Customer import through Worker', async ({ pag
   await page.getByLabel('Название', { exact: true }).fill('Синтетические клиенты UI')
   await page.getByRole('button', { name: 'Сохранить', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Синтетические клиенты UI' })).toBeVisible()
+  const sourceId = new URL(page.url()).pathname.split('/').pop()!
   await page.getByRole('link', { name: 'Загрузить файл', exact: true }).click()
   await page.getByLabel('Файл CSV или XLSX').setInputFiles({
     name: 'operator-fixture.csv', mimeType: 'text/csv',
@@ -34,6 +35,22 @@ test('real cookie/CSRF session and Customer import through Worker', async ({ pag
   const download = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Скачать ошибки CSV' }).click()
   expect((await download).suggestedFilename()).toContain('errors.csv')
+
+  // Corrected re-upload through the real Worker: filled name inserts the row
+  // that failed, the renamed customer updates by the same natural key.
+  await page.goto(`/imports/new?sourceId=${sourceId}`)
+  await page.getByLabel('Файл CSV или XLSX').setInputFiles({
+    name: 'operator-fixed.csv', mimeType: 'text/csv',
+    buffer: Buffer.from('externalId,name,email,registeredAt,isActive\nui-1,Первый обновлённый,first@example.test,2026-01-01,true\nui-2,Второй,second@example.test,2026-01-01,true\n'),
+  })
+  await page.getByRole('button', { name: 'Загрузить и начать импорт' }).click()
+  await expect(page.getByRole('heading', { name: 'operator-fixed.csv' })).toBeVisible()
+  await expect(page.getByText('Завершён', { exact: true })).toBeVisible({ timeout: 60000 })
+  const breakdown = page.locator('.breakdown-values')
+  await expect(breakdown.locator('div', { hasText: 'Добавлено' }).locator('dd')).toHaveText('1')
+  await expect(breakdown.locator('div', { hasText: 'Обновлено' }).locator('dd')).toHaveText('1')
+  await expect(breakdown.locator('div', { hasText: 'С ошибками' }).locator('dd')).toHaveText('0')
+
   await page.goto('/rules')
   await expect(page.getByRole('heading', { name: 'Библиотека правил' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Проверить определение' })).toBeVisible()

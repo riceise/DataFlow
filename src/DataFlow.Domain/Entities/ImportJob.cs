@@ -71,6 +71,9 @@ public sealed class ImportJob
     public string SchemaJson { get; private set; }
     public int SchemaVersion { get; private set; }
     public ImportJobStatus Status { get; private set; }
+    // §8.3 convention: TotalRows counts data rows only. Blank physical rows
+    // advance the checkpoint (LastCommittedRowNumber) but never the data
+    // counters, so Complete requires ProcessedRows == TotalRows exactly at EOF.
     public int? TotalRows { get; private set; }
     public long ProcessedRows { get; private set; }
     public long InsertedRows { get; private set; }
@@ -241,6 +244,9 @@ public sealed class ImportJob
         UpdatedAt = nowUtc.ToUniversalTime();
     }
 
+    // Called once at EOF with the recount of the whole file, including rows
+    // committed by earlier attempts. totalRows < ProcessedRows therefore means
+    // the file content drifted between attempts; equality is the expected case.
     public void SetTotalRows(int totalRows, DateTimeOffset nowUtc)
     {
         EnsureProcessing();
@@ -296,7 +302,8 @@ public sealed class ImportJob
 
         if (ProcessedRows != TotalRows)
         {
-            throw new DomainException("job_incomplete_rows", "All rows must be processed before completion.");
+            throw new DomainException("job_incomplete_rows",
+                $"All rows must be processed before completion (processed {ProcessedRows} of {TotalRows}).");
         }
 
         if (CancelRequested)

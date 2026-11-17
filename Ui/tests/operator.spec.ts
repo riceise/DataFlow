@@ -1,14 +1,15 @@
 import { test, expect } from '@playwright/test'
 
-test('source → upload → row errors → CSV; unknown total and network recovery', async ({
+test('source → upload → row errors → CSV → corrected upload; unknown total and network recovery', async ({
   page,
 }, testInfo) => {
   const sourceId = '971fbdd8-aa18-4121-8cad-8cf4ee18fe23'
   const jobId = 'dd78b18c-7d9d-4c93-843f-bb77bfae0068'
+  const fixedJobId = 'ee78b18c-8d9d-4c93-843f-bb77bfae0069'
   const sources: Record<string, unknown>[] = []
   let finished = false,
     offline = false,
-    uploaded = false
+    uploads = 0
   const schema = {
     version: 1,
     keyFields: ['externalId'],
@@ -44,8 +45,8 @@ test('source → upload → row errors → CSV; unknown total and network recove
     if (path.endsWith('/files')) {
       expect(request.headers()['idempotency-key']).toBeTruthy()
       expect(request.headers()['x-csrf-token']).toBe('test-token')
-      uploaded = true
-      return json({ jobId, status: 'Queued' }, 202)
+      uploads += 1
+      return json({ jobId: uploads === 1 ? jobId : fixedJobId, status: 'Queued' }, 202)
     }
     if (path === `/jobs/${jobId}`) {
       if (offline) return route.abort('internetdisconnected')
@@ -68,6 +69,47 @@ test('source → upload → row errors → CSV; unknown total and network recove
         cancelRequested: false,
       })
     }
+    if (path === `/jobs/${fixedJobId}`)
+      return json({
+        id: fixedJobId,
+        dataSourceId: sourceId,
+        originalFileName: 'customers-fixed.csv',
+        status: 'Completed',
+        schemaVersion: 1,
+        createdAt: '2026-11-10T12:00:00Z',
+        totalRows: 2,
+        processedRows: 2,
+        insertedRows: 1,
+        updatedRows: 1,
+        invalidRows: 0,
+        duplicateRows: 0,
+        validRows: 0,
+        canCancel: false,
+        canRetry: false,
+        cancelRequested: false,
+      })
+    if (path === `/jobs/${fixedJobId}/rows`)
+      return json({
+        items: [
+          {
+            rowNumber: 2,
+            status: 'Inserted',
+            rawData: '["a","A","a@example.test","true"]',
+            naturalKey: 'a',
+            errors: [],
+          },
+          {
+            rowNumber: 3,
+            status: 'Updated',
+            rawData: '["b","B","b@example.test","true"]',
+            naturalKey: 'b',
+            errors: [],
+          },
+        ],
+        total: 2,
+        page: 1,
+        pageSize: 25,
+      })
     if (path.endsWith('/rows'))
       return json({
         items: finished
@@ -113,7 +155,7 @@ test('source → upload → row errors → CSV; unknown total and network recove
   })
   await page.getByRole('button', { name: 'Загрузить и начать импорт' }).click()
   await expect(page.getByRole('heading', { name: 'customers.csv' })).toBeVisible()
-  expect(uploaded).toBe(true)
+  expect(uploads).toBe(1)
   await expect(page.getByText('Всего строк станет известно после чтения файла.')).toBeVisible()
   await expect(page.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow')
   offline = true
@@ -131,6 +173,27 @@ test('source → upload → row errors → CSV; unknown total and network recove
   const download = page.waitForEvent('download')
   await page.getByRole('button', { name: 'Скачать ошибки CSV' }).click()
   expect((await download).suggestedFilename()).toBe(`import-${jobId}-errors.csv`)
+
+  // Corrected re-upload: the fixed file completes and the breakdown shows the
+  // documented upsert outcomes (inserted, updated, no row errors).
+  await page.goto(`/imports/new?sourceId=${sourceId}`)
+  await page.getByLabel('Файл CSV или XLSX').setInputFiles({
+    name: 'customers-fixed.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from(
+      'externalId,name,email,isActive\na,A,a@example.test,true\nb,B,b@example.test,true',
+    ),
+  })
+  await page.getByRole('button', { name: 'Загрузить и начать импорт' }).click()
+  await expect(page.getByRole('heading', { name: 'customers-fixed.csv' })).toBeVisible()
+  await expect(page.getByText('Завершён', { exact: true })).toBeVisible()
+  await expect(page.getByText('Всего строк: 2')).toBeVisible()
+  const breakdown = page.locator('.breakdown-values')
+  await expect(breakdown.locator('div', { hasText: 'Добавлено' }).locator('dd')).toHaveText('1')
+  await expect(breakdown.locator('div', { hasText: 'Обновлено' }).locator('dd')).toHaveText('1')
+  await expect(breakdown.locator('div', { hasText: 'С ошибками' }).locator('dd')).toHaveText('0')
+  await expect(page.getByText('invalid_email')).toHaveCount(0)
+
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth > window.innerWidth,
   )

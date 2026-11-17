@@ -121,7 +121,7 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
             var retryable = exception is not (ImportFileException or DomainException);
             await store.FinalizeAsync(lease, messageId, null, code, retryable, cancellationToken, attempt);
             if (retryable) { DataFlowTelemetry.Errors.Add(1, new KeyValuePair<string, object?>("dependency", "import_io")); }
-            logger.LogWarning("Import failed with {ErrorCode}; retryable: {Retryable}; error type: {ErrorType}", code, retryable, exception.GetType().Name);
+            logger.LogWarning("Import failed with {ErrorCode}; retryable: {Retryable}; error type: {ErrorType}; message: {Message}", code, retryable, exception.GetType().Name, exception.Message);
         }
         finally
         {

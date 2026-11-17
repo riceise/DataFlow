@@ -1,0 +1,9 @@
+externalId,name,email,registeredAt,isActive
+ext-100,Alice Brown,alice.brown@example.test,2026-01-05,true
+ext-101,Boris Chen,boris.chen@example.test,2026-01-18,false
+ext-102,Carmen Diaz,carmen.diaz@example.test,2026-02-02,true
+ext-103,Daniel Egorov,daniel.egorov@example.test,2026-02-14,true
+ext-104,Emma Fischer,emma.fischer@example.test,2026-03-01,false
+ext-105,Fedor Grachev,fedor.grachev@example.test,2026-03-09,true
+ext-106,Grace Hooper,grace.hooper@example.test,2026-03-21,true
+ext-107,Deniz Ildirim,deniz.ildirim@example.test,2026-04-02,true

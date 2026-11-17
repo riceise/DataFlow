@@ -7,9 +7,43 @@ on:
     branches: [ main, master ]
 
 jobs:
-  build-and-test:
+  repo-hygiene:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
+      - name: Verify no secrets or private plans are tracked
+        run: |
+          tracked=$(git ls-files)
+          failed=0
+          while IFS= read -r pattern; do
+            if echo "$tracked" | grep -iqE "$pattern"; then
+              echo "::error::Tracked file matches forbidden pattern: $pattern"
+              echo "$tracked" | grep -iE "$pattern"
+              failed=1
+            fi
+          done <<-'PATTERNS'
+          ^\.env$
+          ^plan\.md$
+          ^DataFlow-Architecture\.md$
+          ^GUIDE\.md$
+          ^opencode\.json$
+          \.pfx$
+          \.p12$
+          \.key$
+          \.pem$
+          secrets\.json$
+          http-client\.private\.env\.json$
+          ^postgres-data/
+          ^rabbitmq-data/
+          ^minio-data/
+          ^uploads/
+          PATTERNS
+          exit $failed
+
+  backend:
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,5 +62,81 @@ jobs:
       - name: Build solution
         run: dotnet build DataFlow.sln --no-restore --configuration Release
 
-      - name: Run tests
-        run: dotnet test DataFlow.sln --no-build --configuration Release --verbosity normal
+      - name: Run unit tests (Domain, Application)
+        run: |
+          dotnet test tests/DataFlow.Domain.Tests --no-build --configuration Release --verbosity normal
+          dotnet test tests/DataFlow.Application.Tests --no-build --configuration Release --verbosity normal
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore dependencies
+        run: dotnet restore DataFlow.sln
+
+      - name: Build solution
+        run: dotnet build DataFlow.sln --no-restore --configuration Release
+
+      # Uses Testcontainers (PostgreSQL, RabbitMQ, MinIO) on the runner Docker.
+      - name: Run integration and end-to-end tests
+        run: dotnet test tests/DataFlow.IntegrationTests --no-build --configuration Release --verbosity normal
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Ui
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: Ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run type-check
+
+      - name: Build
+        run: npm run build
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # Mock end-to-end scenario; the live variant (DATAFLOW_LIVE=1) needs the
+      # full stack and runs from the operator's machine, not CI.
+      - name: Playwright end-to-end (mock)
+        run: npm run test:e2e
+
+  docker-images:
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -f src/DataFlow.Api/Dockerfile -t dataflow-api:ci .
+
+      - name: Build Worker image
+        run: docker build -f src/DataFlow.Worker/Dockerfile -t dataflow-worker:ci .
+
+      - name: Build Web image
+        run: docker build -f Ui/Dockerfile -t dataflow-web:ci .

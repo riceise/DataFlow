@@ -100,11 +100,18 @@ public sealed class Customer
         RegisteredAt = registeredAt;
         IsActive = isActive;
         RowHash = rowHash;
-        ExternalId = ExternalId.Trim();
         UpdatedAt = nowUtc.ToUniversalTime();
     }
 }
 
+// ADR-001 (docs/adr/001-natural-key.md): the natural key is ordinal and
+// case-sensitive — only whitespace is trimmed, with no case folding or Unicode
+// (NFC) normalization. "ABC-001" and "abc-001" are deliberately distinct
+// business records; the same convention holds for the stored ExternalId,
+// canonical JSON and RowHash, and for the deterministic collations of
+// ux_customers_source_natural_key and ix_import_rows_job_natural_key.
+// Changing it requires a schema-level normalization option plus a one-time
+// backfill of stored keys — not an edit here.
 public static class CustomerNaturalKey
 {
     public const string Separator = ":";

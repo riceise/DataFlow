@@ -1,7 +1,7 @@
 # DataFlow
 
 Платформа импорта, валидации и фоновой обработки данных.
-Реализован сквозной импорт CSV и XLSX: API управления источниками и схемой Customer, библиотека пользовательских правил (Customer/Tabular), потоковая загрузка в S3/MinIO, transactional outbox в PostgreSQL, доставка через RabbitMQ и обработка Worker с lease/fencing и транзакционными батчами. Результаты строк и ошибки доступны через API и в виде потокового CSV-отчёта; агрегированные показатели — через Dashboard Summary. Есть валидация конфигурации, структурированные JSON-логи, локальная инфраструктура Docker Compose и CI.
+Реализован сквозной импорт CSV и XLSX: API управления источниками и схемой Customer, библиотека пользовательских правил (Customer/Tabular), потоковая загрузка в S3/MinIO, transactional outbox в PostgreSQL, доставка через RabbitMQ и обработка Worker с lease/fencing и транзакционными батчами. Результаты строк и ошибки доступны через API и в виде потокового CSV-отчёта; агрегированные показатели — через Dashboard Summary. Есть валидация конфигурации, структурированные JSON-логи, локальная инфраструктура Docker Compose и CI. Публичные fixtures для демо — в [samples/README.md](samples/README.md), краткая схема архитектуры — в [ARCHITECTURE.md](ARCHITECTURE.md), замеры производительности — в [benchmarks/README.md](benchmarks/README.md).
 
 ## Требования
 
@@ -20,7 +20,8 @@ docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-com
 
 Web: `http://127.0.0.1:8080`; Jaeger: `http://127.0.0.1:16686`;
 Prometheus: `http://127.0.0.1:9090`. Сначала создайте `.env` по инструкции ниже.
-Для сквозной проверки запущенного Compose: `node tools/smoke-compose.mjs`.
+Для сквозной проверки запущенного Compose: `node tools/smoke-compose.mjs`;
+для демонстрации восстановления после остановки Worker: `node tools/demo-recovery.mjs`.
 
 1. Скопируйте шаблон переменных окружения в локальный `.env` (файл `.env` исключён из Git):
 
@@ -332,6 +333,85 @@ Duplicate; повтор ключа внутри файла — Invalid `duplicat
 на уровне батча. Экспорт ошибок, Dashboard и полный операторский сценарий доступны
 в интерфейсе `Ui/` (см. `Ui/README.md`).
 
+## Демо и samples
+
+Публичные fixtures для демонстрации лежат в `samples/` — синтетические данные без
+персональной информации, генерация детерминирована. `customers-with-errors.csv`
+даёт `CompletedWithErrors` (добавлено 5, с ошибками 7) и воспроизводимые ошибки
+всех основных кодов (`required`, `invalid_email`, `invalid_date`, `invalid_type`,
+`max_length`, `duplicate_key_in_file`); `customers-with-errors-fixed.csv` при
+повторной загрузке даёт `Completed` (добавлено 7, обновлено 1, без изменений 4);
+XLSX-файлы дают тот же результат, что и CSV. Ожидаемые результаты, таблица ошибок
+с физическими номерами строк и curl-сценарий — в
+[samples/README.md](samples/README.md). Регенерация:
+
+```powershell
+dotnet run --project tools/DataFlow.SampleGenerator
+```
+
+## Бенчмарк производительности
+
+`tools/DataFlow.Benchmark` поднимает изолированные PostgreSQL/RabbitMQ/MinIO через
+Testcontainers, запускает реальный API и Worker как отдельные процессы, N раз
+импортирует синтетический fixture (на каждые 10 строк: 6 новых, 1 обновление,
+1 дубль, 2 невалидных) и сэмплирует RSS Worker каждые 200 мс:
+
+```powershell
+dotnet build DataFlow.sln
+dotnet run --project tools/DataFlow.Benchmark -- [--runs 10] [--rows 1000] [--skip-big]
+```
+
+Замеряются длительность «после захвата» (от первого не-`Queued` статуса) и полный
+цикл «upload → терминальный статус»: p50/p95, средняя пропускная способность
+(rows/s), пик RSS Worker; счётчики каждого прогона сверяются с fixture. Отдельно
+выполняется большой fixture ≈24 МиБ (~283 000 строк) для проверки бюджета памяти.
+Результаты печатаются таблицей и пишутся в `benchmarks/results-<timestamp>.json`
+(логи дочерних процессов — в `benchmarks/logs/`); последний прогон и проверка
+бюджетов — в [benchmarks/README.md](benchmarks/README.md).
+
+Ориентиры (см. [ARCHITECTURE.md](ARCHITECTURE.md)): 1 000 строк — не дольше
+30 секунд после захвата; RSS Worker ≤ 512 МиБ на fixture до 25 МиБ.
+
+## Восстановление после остановки Worker
+
+`tools/demo-recovery.mjs` демонстрирует продолжение обработки после сбоя против
+полного Compose: фаза A загружает большой файл и останавливает Worker сразу после
+начала обработки (`docker compose ... stop worker`); фаза B загружает ещё один
+файл (задание остаётся `Queued`), затем Worker запускается снова — обработка
+продолжается с checkpoint без дублей, счётчики сходятся с fixture:
+
+```powershell
+node tools/demo-recovery.mjs
+```
+
+Инварианты возобновления (lease/fencing, повторная доставка, частичные батчи)
+закреплены интеграционными тестами `RecoveryStage8Tests`.
+
+## Приёмочные критерии MVP
+
+| Критерий | Проверка |
+|---|---|
+| Сквозной путь: источник → upload → очередь → Worker → строки/отчёт/исправленный файл | `dotnet test tests/DataFlow.IntegrationTests` (Testcontainers PostgreSQL + RabbitMQ + MinIO); основной сценарий по samples — `AcceptanceStage12Tests.SampleMainPath_...` |
+| CSV ≡ XLSX: одинаковые `NaturalKey`, `RowHash`, статусы и ошибки | `Stage9XlsxReportsAndDashboardTests`, `AcceptanceStage12Tests.SampleXlsxErrors_...` |
+| Лимиты: превышение `Import:MaxRows` → `Failed` `row_limit_exceeded` без частичной фиксации; повторный retry такого задания — `409 job_not_retryable` | `AcceptanceStage12Tests.UploadAboveRowLimit_...` |
+| Восстановление после остановки Worker: продолжение с checkpoint, без дублей и потерь | `RecoveryStage8Tests`; демонстрация — `tools/demo-recovery.mjs` |
+| Основной путь в интерфейсе: источник → upload → ошибки → отчёт → исправленный файл | Playwright: `Ui/tests/operator.spec.ts` (макет, запускается в CI), live-вариант `operator.live.ts` против API+Worker (`DATAFLOW_LIVE=1`) |
+| Производительность: p95 «после захвата» ≤ 30 с на 1 000 строк; RSS Worker ≤ 512 МиБ на fixture ~24 МиБ | `tools/DataFlow.Benchmark`, фактические значения — [benchmarks/README.md](benchmarks/README.md) |
+| CI: форматирование, unit- и интеграционные тесты, frontend lint/type-check/build/Playwright, сборка Docker-образов, чистота репозитория | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
+| Секреты и приватные материалы вне Git (`.env`, личные планы, ключи, данные) | job `repo-hygiene` в CI |
+
+## Ограничения MVP
+
+Кратко; подробнее — в [ARCHITECTURE.md](ARCHITECTURE.md):
+
+- Один владелец на источник данных, cookie-сессии Identity; без ролей и OIDC.
+- Форматы CSV (UTF-8, фиксированный delimiter) и XLSX (первый лист);
+  XML и REST-источники — после MVP.
+- Атомарность на уровне батча: при неисправимой ошибке файла ранее
+  закоммиченные батчи сохраняются.
+- Авто-retry ограничен 4 попытками (5 с / 30 с / 5 мин); отмена и ручной retry —
+  операции API.
+
 ## Структура
 
 ```text
@@ -344,11 +424,18 @@ src/
 tests/
   DataFlow.Domain.Tests/
   DataFlow.Application.Tests/
-  DataFlow.IntegrationTests/
-deploy/
-  docker-compose.yml         # PostgreSQL, RabbitMQ, MinIO
-.github/workflows/
-  ci.yml                     # Сборка, проверка форматирования и тесты
+  DataFlow.IntegrationTests/ # Testcontainers: PostgreSQL, RabbitMQ, MinIO
+Ui/                          # Vue 3 интерфейс оператора (+ Playwright-сценарии)
+samples/                     # Публичные fixtures для демо (README, CSV/XLSX)
+tools/
+  DataFlow.SampleGenerator/  # Детерминированная регенерация samples
+  DataFlow.Benchmark/        # Замеры производительности и RSS Worker
+  demo-recovery.mjs          # Демонстрация восстановления после остановки Worker
+  smoke-compose.mjs          # Сквозная проверка запущенного Compose
+benchmarks/                  # Результаты прогонов (README, results-*.json)
+deploy/                      # Compose (инфраструктура + приложения), OPERATIONS.md
+ARCHITECTURE.md              # Краткая публичная схема архитектуры
+.github/workflows/ci.yml     # Форматирование, unit/integration, frontend, Docker-образы
 ```
 
 Общие настройки сборки находятся в `Directory.Build.props`, версии пакетов — в `Directory.Packages.props`.

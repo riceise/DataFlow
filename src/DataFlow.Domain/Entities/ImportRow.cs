@@ -84,7 +84,7 @@ public sealed class ImportRow
         }
 
         var normalizedRaw = string.IsNullOrWhiteSpace(rawData) ? null : rawData.Trim();
-        var normalizedNaturalKey = string.IsNullOrWhiteSpace(naturalKey) ? null : naturalKey;
+        var normalizedNaturalKey = string.IsNullOrWhiteSpace(naturalKey) ? null : naturalKey.Trim();
 
         string? errorsJson = null;
         if (errors is { Count: > 0 })

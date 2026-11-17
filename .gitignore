@@ -59,6 +59,7 @@ scratch.*
 *.bak
 *.dump
 *.sql
+/benchmarks/results-*.json
 /*.csv
 /*.xlsx
 /*.xls

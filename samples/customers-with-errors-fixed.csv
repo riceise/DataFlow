@@ -1,0 +1,13 @@
+externalId,name,email,registeredAt,isActive
+ext-001,Ivan Petrov,ivan.petrov@example.test,2026-01-15,true
+ext-002,Anna Ivanova,anna.ivanova@example.test,2026-02-01,true
+ext-003,Sergey Smirnov,sergey.smirnov@example.test,2026-02-10,false
+ext-004,Elena Orlova,elena.orlova@example.test,2026-03-05,true
+ext-005,Olga Nikitina,olga.nikitina@example.test,2026-03-10,true
+ext-006,Pavel Orlov,pavel.orlov@example.test,2026-03-12,true
+ext-007,Maxim Volkov,maxim.volkov@example.test,2026-03-15,true
+ext-008,Victoria Belova,victoria.belova@example.test,2026-03-18,true
+ext-009,Georgy Denisov,georgy.denisov@example.test,2026-03-20,false
+ext-010,Vera Sokolova,long.name@example.test,2026-03-25,true
+ext-011,Vera Sokolova,vera.sokolova@example.test,2026-03-26,true
+ext-012,Karim Zuhdi,karim.zuhdi@example.test,2026-04-10,true

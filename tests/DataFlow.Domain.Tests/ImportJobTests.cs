@@ -106,6 +106,19 @@ public sealed class ImportJobTests
     }
 
     [Fact]
+    public void Complete_IncludesProcessedAndTotalDiagnostics()
+    {
+        var job = NewJob();
+        job.AcquireLease("worker", Now, 60);
+        job.SetTotalRows(3, Now);
+
+        var exception = Assert.Throws<DomainException>(() => job.Complete(Now));
+
+        Assert.Equal("job_incomplete_rows", exception.Code);
+        Assert.Contains("processed 0 of 3", exception.Message);
+    }
+
+    [Fact]
     public void EmptyFile_CanCompleteWithZeroRows()
     {
         var job = NewJob();
