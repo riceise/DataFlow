@@ -137,7 +137,7 @@ public sealed class JobRowsStage7Tests(DataSourcesApiFixture fixture) : IClassFi
         foreach (var index in Enumerable.Range(0, rowCount).Reverse())
         {
             var status = (ImportRowStatus)(index % 4 + 1);
-            database.ImportRows.Add(ImportRow.Create(job.Id, index + 2, status,
+            database.ImportRows.Add(ImportRow.Create(job.Id, job.Parts[0].Id, index + 2, status,
                 status == ImportRowStatus.Invalid ? "{\"email\":\"invalid\"}" : null, $"key-{index}",
                 status == ImportRowStatus.Invalid ? [new("email", "invalid_email", "A valid email address is required.")] : null,
                 DateTimeOffset.UtcNow, status == ImportRowStatus.Invalid ? null : new string('b', 64)));

@@ -39,6 +39,7 @@ public sealed class FileUploadsStage5Tests(DataSourcesApiFixture fixture) : ICla
         await using var db = fixture.CreateContext();
         await db.UploadRequests.ExecuteDeleteAsync();
         await db.OutboxMessages.ExecuteDeleteAsync();
+        await db.ImportParts.ExecuteDeleteAsync();
         await db.ImportJobs.ExecuteDeleteAsync();
         await db.DataSources.ExecuteDeleteAsync();
         var source = DataSource.Create("Uploads", DataSourceDataType.Customer, AcceptedFileFormat.Csv | AcceptedFileFormat.Pdf,
@@ -383,6 +384,28 @@ public sealed class FileUploadsStage5Tests(DataSourcesApiFixture fixture) : ICla
         Assert.False(_storage.Objects.ContainsKey(orphan.StorageKey));
         Assert.True(_storage.Objects.ContainsKey(active.StorageKey));
         Assert.Equal(2, await db.UploadRequests.CountAsync());
+    }
+
+    [Fact]
+    public async Task UnconfiguredTabularUpload_UsesPartScopedDeduplication()
+    {
+        await using var db = fixture.CreateContext();
+        var tabular = DataSource.Create("Unconfigured table", DataSourceDataType.Tabular, AcceptedFileFormat.Csv,
+            new DataSourceSchema(1, ["code"], [new DataSourceFieldDefinition("code", "string", true)]), DateTimeOffset.UtcNow);
+        tabular.AssignOwner(TestAuthentication.UserId);
+        db.DataSources.Add(tabular);
+        await db.SaveChangesAsync();
+        _sourceId = tabular.Id;
+
+        using var response = await Upload("tabular");
+        response.EnsureSuccessStatusCode();
+        var accepted = await response.Content.ReadFromJsonAsync<JobAcceptedDto>();
+        db.ChangeTracker.Clear();
+        var job = await db.ImportJobs.SingleAsync(j => j.Id == accepted!.JobId);
+        var part = Assert.Single(job.Parts);
+        Assert.Equal("part:0", part.DeduplicationScope);
+        Assert.Null(part.RuleSetVersionId);
+        Assert.Null(part.RuleDocumentId);
     }
 
     private async Task<HttpResponseMessage> Upload(string? key, string contents = Csv, string name = "customers.csv")

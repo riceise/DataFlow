@@ -298,6 +298,7 @@ public sealed class Stage9XlsxReportsAndDashboardTests(DataSourcesApiFixture fix
 
         db.ImportRows.Add(ImportRow.Create(
             job.Id,
+            job.Parts[0].Id,
             2,
             ImportRowStatus.Invalid,
             JsonSerializer.Serialize(dangerousCells),

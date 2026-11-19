@@ -13,7 +13,7 @@ public sealed class ImportRowTests
     [InlineData(ImportRowStatus.Duplicate)]
     public void SuccessfulRow_CanOmitRawDataAndErrors(ImportRowStatus status)
     {
-        var row = ImportRow.Create(Guid.NewGuid(), 2, status, null, "key", null, DateTimeOffset.UtcNow);
+        var row = ImportRow.Create(Guid.NewGuid(), Guid.NewGuid(), 2, status, null, "key", null, DateTimeOffset.UtcNow);
         Assert.Equal(status, row.Status);
         Assert.Null(row.RawData);
         Assert.Empty(row.GetErrors());
@@ -25,10 +25,10 @@ public sealed class ImportRowTests
         var jobId = Guid.NewGuid();
         var errors = new[] { new ImportRowError("email", "invalid_email", "Invalid email") };
         Assert.Equal("invalid_import_row_errors", Assert.Throws<DomainException>(() =>
-            ImportRow.Create(jobId, 2, ImportRowStatus.Invalid, null, null, errors, DateTimeOffset.UtcNow)).Code);
+            ImportRow.Create(jobId, Guid.NewGuid(), 2, ImportRowStatus.Invalid, null, null, errors, DateTimeOffset.UtcNow)).Code);
         Assert.Equal("invalid_import_row_errors", Assert.Throws<DomainException>(() =>
-            ImportRow.Create(jobId, 2, ImportRowStatus.Invalid, "{}", null, null, DateTimeOffset.UtcNow)).Code);
-        var row = ImportRow.Create(jobId, 2, ImportRowStatus.Invalid, "{}", null, errors, DateTimeOffset.UtcNow);
+            ImportRow.Create(jobId, Guid.NewGuid(), 2, ImportRowStatus.Invalid, "{}", null, null, DateTimeOffset.UtcNow)).Code);
+        var row = ImportRow.Create(jobId, Guid.NewGuid(), 2, ImportRowStatus.Invalid, "{}", null, errors, DateTimeOffset.UtcNow);
         Assert.Equal(errors, row.GetErrors());
     }
 
@@ -39,6 +39,6 @@ public sealed class ImportRowTests
     public void Row_RejectsInvalidNumberAndStatus(int number, ImportRowStatus status)
     {
         Assert.Equal("invalid_import_row", Assert.Throws<DomainException>(() =>
-            ImportRow.Create(Guid.NewGuid(), number, status, null, null, null, DateTimeOffset.UtcNow)).Code);
+            ImportRow.Create(Guid.NewGuid(), Guid.NewGuid(), number, status, null, null, null, DateTimeOffset.UtcNow)).Code);
     }
 }

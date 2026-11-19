@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using DataFlow.Application.Abstractions;
 using DataFlow.Domain.Entities;
 using DataFlow.Domain.Enums;
@@ -26,6 +28,7 @@ public sealed class BackfillTests(DataSourcesApiFixture fixture) : IClassFixture
         await db.OutboxMessages.ExecuteDeleteAsync();
         await db.ProcessedMessages.ExecuteDeleteAsync();
         await db.ImportRows.ExecuteDeleteAsync();
+        await db.ImportParts.ExecuteDeleteAsync();
         await db.ImportJobs.ExecuteDeleteAsync();
         await db.Customers.ExecuteDeleteAsync();
         await db.DataSources.ExecuteDeleteAsync();
@@ -276,7 +279,7 @@ public sealed class BackfillTests(DataSourcesApiFixture fixture) : IClassFixture
         job.AcquireLease("crashed", oldTime, 60);
         job.RecordBatchCompletion(2, 0, 0, 1, 0, oldTime);
         db.ImportJobs.Add(job);
-        db.ImportRows.Add(ImportRow.Create(job.Id, 2, ImportRowStatus.Invalid, "[]", "committed-key",
+        db.ImportRows.Add(ImportRow.Create(job.Id, job.Parts[0].Id, 2, ImportRowStatus.Invalid, "[]", "committed-key",
             [new ImportRowError("email", "invalid_email", "A valid email is required.")], oldTime));
         await db.SaveChangesAsync();
 
@@ -296,6 +299,314 @@ public sealed class BackfillTests(DataSourcesApiFixture fixture) : IClassFixture
         Assert.Equal(3, resumed.LastCommittedRowNumber);
         Assert.Equal(2, await db.ImportRows.CountAsync());
         Assert.Single(await db.Customers.ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task BackfillRestoresEitherMissingSideWithoutOverwritingPinnedReferences()
+    {
+        await using var db = fixture.CreateContext();
+        var userId = Guid.NewGuid();
+        db.Users.Add(new ApplicationUser { Id = userId, UserName = "partial@test" });
+        var source = DataSource.Create("Partial", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
+            LegacySchema(1), DateTimeOffset.UtcNow);
+        var job = ImportJob.Create(source.Id, "partial.csv", "partial", new string('a', 64),
+            source.SchemaJson, 1, DateTimeOffset.UtcNow);
+        db.AddRange(source, job);
+        await db.SaveChangesAsync();
+        var command = new BackfillRulesCommand(db, NullLogger<BackfillRulesCommand>.Instance);
+        await command.ExecuteAsync(userId, CancellationToken.None);
+        db.ChangeTracker.Clear();
+
+        var original = await db.ImportJobs.SingleAsync(j => j.Id == job.Id);
+        var expected = new ExpectedPins(original.RuleSetVersionId!.Value, original.RuleDocumentId!.Value,
+            original.ExecutionFingerprint, original.RuleSetNameAtSubmission, original.RuleVersionNumberAtSubmission!.Value,
+            original.Parts[0].RuleSnapshotHash);
+
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE import_parts SET rule_set_version_id = NULL, rule_document_id = NULL, rule_snapshot_hash = NULL,
+                rule_set_name_at_submission = NULL, rule_version_number_at_submission = NULL
+            WHERE id = {original.Parts[0].Id}
+            """);
+        db.ChangeTracker.Clear();
+        var partResult = await command.ExecuteAsync(userId, CancellationToken.None);
+        Assert.Equal(1, partResult.JobsLinked);
+        Assert.Equal(0, partResult.SetsCreated);
+        Assert.Equal(0, partResult.VersionsCreated);
+        Assert.Equal(0, partResult.DocumentsCreated);
+        await AssertRestoredAsync(db, job.Id, expected);
+
+        var staleFingerprint = ExecutionFingerprint(userId, source.Id, job.FileSha256, null);
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE import_jobs SET rule_set_version_id = NULL, rule_document_id = NULL, execution_fingerprint = {staleFingerprint},
+                rule_set_name_at_submission = NULL, rule_version_number_at_submission = NULL, schema_version = 2
+            WHERE id = {job.Id}
+            """);
+        db.ChangeTracker.Clear();
+        var jobResult = await command.ExecuteAsync(userId, CancellationToken.None);
+        Assert.Equal(1, jobResult.JobsLinked);
+        await AssertRestoredAsync(db, job.Id, expected);
+        Assert.Equal(0, (await command.ExecuteAsync(userId, CancellationToken.None)).JobsLinked);
+    }
+
+    [Fact]
+    public async Task BackfillUsesExistingDefaultVersionForUnpinnedJobWithoutCreatingDuplicates()
+    {
+        await using var db = fixture.CreateContext();
+        var userId = Guid.NewGuid();
+        db.Users.Add(new ApplicationUser { Id = userId, UserName = "existing-default@test" });
+        var source = DataSource.Create("Existing default", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
+            LegacySchema(1), DateTimeOffset.UtcNow);
+        db.DataSources.Add(source);
+        await db.SaveChangesAsync();
+        var command = new BackfillRulesCommand(db, NullLogger<BackfillRulesCommand>.Instance);
+        await command.ExecuteAsync(userId, CancellationToken.None);
+        var defaultVersionId = (await db.DataSources.SingleAsync(s => s.Id == source.Id)).DefaultRuleSetVersionId;
+        var job = ImportJob.Create(source.Id, "late-legacy.csv", "late", new string('b', 64),
+            source.SchemaJson, 1, DateTimeOffset.UtcNow);
+        db.ImportJobs.Add(job);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var result = await command.ExecuteAsync(userId, CancellationToken.None);
+        Assert.Equal(1, result.JobsLinked);
+        Assert.Equal(0, result.SetsCreated);
+        Assert.Equal(0, result.VersionsCreated);
+        Assert.Equal(0, result.DocumentsCreated);
+        db.ChangeTracker.Clear();
+        var migrated = await db.ImportJobs.SingleAsync(j => j.Id == job.Id);
+        Assert.Equal(defaultVersionId, migrated.RuleSetVersionId);
+        Assert.Equal(defaultVersionId, migrated.Parts[0].RuleSetVersionId);
+        Assert.Equal(migrated.RuleDocumentId, migrated.Parts[0].RuleDocumentId);
+        Assert.Equal(1, await db.RuleSets.CountAsync());
+        Assert.Equal(1, await db.RuleSetVersions.CountAsync());
+        Assert.Equal(1, await db.RuleDocuments.CountAsync());
+    }
+
+    [Fact]
+    public async Task BackfillConflictRollsBackEveryJobOfTheSource()
+    {
+        await using var db = fixture.CreateContext();
+        var userId = Guid.NewGuid();
+        db.Users.Add(new ApplicationUser { Id = userId, UserName = "reference-conflict@test" });
+        var source = DataSource.Create("Reference conflict", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
+            LegacySchema(1), DateTimeOffset.UtcNow);
+        var pinned = ImportJob.Create(source.Id, "pinned.csv", "pinned", new string('a', 64),
+            source.SchemaJson, 1, DateTimeOffset.UtcNow);
+        db.AddRange(source, pinned);
+        await db.SaveChangesAsync();
+        var command = new BackfillRulesCommand(db, NullLogger<BackfillRulesCommand>.Instance);
+        await command.ExecuteAsync(userId, CancellationToken.None);
+
+        var unpinned = ImportJob.Create(source.Id, "unpinned.csv", "unpinned", new string('b', 64),
+            source.SchemaJson, 1, DateTimeOffset.UtcNow);
+        db.ImportJobs.Add(unpinned);
+        await db.SaveChangesAsync();
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE import_parts SET rule_snapshot_hash = {new string('x', 64)}, rule_set_name_at_submission = NULL
+            WHERE import_job_id = {pinned.Id}
+            """);
+        db.ChangeTracker.Clear();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => command.ExecuteAsync(userId, CancellationToken.None));
+        db.ChangeTracker.Clear();
+        var untouched = await db.ImportJobs.SingleAsync(j => j.Id == unpinned.Id);
+        Assert.Null(untouched.RuleSetVersionId);
+        Assert.Null(untouched.RuleDocumentId);
+        Assert.Null(untouched.Parts[0].RuleSetVersionId);
+        Assert.Null(untouched.Parts[0].RuleDocumentId);
+        Assert.Null(untouched.Parts[0].RuleSnapshotHash);
+        Assert.Equal(1, await db.RuleSets.CountAsync());
+    }
+
+    [Fact]
+    public async Task BackfillTreatsUnavailableHistoricalNumberAsSourceConflict()
+    {
+        await using var db = fixture.CreateContext();
+        var userId = Guid.NewGuid();
+        db.Users.Add(new ApplicationUser { Id = userId, UserName = "historical-gap@test" });
+        var source = DataSource.Create("Historical gap", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
+            LegacySchema(1), DateTimeOffset.UtcNow);
+        for (var version = 2; version <= 5; version++)
+        {
+            source.Update("Historical gap", AcceptedFileFormat.Csv, LegacySchema(version), DateTimeOffset.UtcNow);
+        }
+        db.DataSources.Add(source);
+        await db.SaveChangesAsync();
+        var command = new BackfillRulesCommand(db, NullLogger<BackfillRulesCommand>.Instance);
+        await command.ExecuteAsync(userId, CancellationToken.None);
+
+        var lateJob = ImportJob.Create(source.Id, "older.csv", "older", new string('b', 64),
+            LegacySchema(1).ToJson(), 1, DateTimeOffset.UtcNow);
+        db.ImportJobs.Add(lateJob);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => command.ExecuteAsync(userId, CancellationToken.None));
+        db.ChangeTracker.Clear();
+        Assert.Equal(5, (await db.RuleSets.SingleAsync()).LastVersionNumber);
+        Assert.Equal(5, (await db.RuleSetVersions.SingleAsync()).VersionNumber);
+        Assert.Equal(1, await db.RuleDocuments.CountAsync());
+        var untouched = await db.ImportJobs.SingleAsync(j => j.Id == lateJob.Id);
+        Assert.Null(untouched.RuleSetVersionId);
+        Assert.Null(Assert.Single(untouched.Parts).RuleSetVersionId);
+    }
+
+    [Fact]
+    public async Task BackfillDoesNotAppendVersionsToForeignDefaultSet()
+    {
+        await using var db = fixture.CreateContext();
+        var userId = Guid.NewGuid();
+        var foreignOwnerId = Guid.NewGuid();
+        db.Users.AddRange(new ApplicationUser { Id = userId, UserName = "recipient@test" },
+            new ApplicationUser { Id = foreignOwnerId, UserName = "foreign-owner@test" });
+        var foreignSet = new RuleSet(foreignOwnerId, "Shared rules", null, "Customer");
+        foreignSet.RegisterHistoricalVersion(5);
+        var document = new RuleDocument(new string('d', 64), "{}", "legacy-customer-v1");
+        var foreignVersion = new RuleSetVersion(foreignSet.Id, 5, document.Id, null, null, null);
+        var source = DataSource.Create("Shared default", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
+            LegacySchema(1), DateTimeOffset.UtcNow);
+        source.AssignOwner(userId);
+        source.SelectRules(foreignVersion.Id, DataSourceDataType.Customer);
+        var job = ImportJob.Create(source.Id, "legacy.csv", "legacy", new string('e', 64),
+            source.SchemaJson, 1, DateTimeOffset.UtcNow);
+        db.AddRange(foreignSet, document, foreignVersion, source, job);
+        await db.SaveChangesAsync();
+        var revision = foreignSet.Revision;
+        db.ChangeTracker.Clear();
+
+        var command = new BackfillRulesCommand(db, NullLogger<BackfillRulesCommand>.Instance);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => command.ExecuteAsync(userId, CancellationToken.None));
+        db.ChangeTracker.Clear();
+        var persistedSet = await db.RuleSets.SingleAsync();
+        Assert.Equal(foreignOwnerId, persistedSet.OwnerUserId);
+        Assert.Equal(revision, persistedSet.Revision);
+        Assert.Equal(5, persistedSet.LastVersionNumber);
+        Assert.Equal(foreignVersion.Id, (await db.RuleSetVersions.SingleAsync()).Id);
+        Assert.Equal(document.Id, (await db.RuleDocuments.SingleAsync()).Id);
+        var untouched = await db.ImportJobs.SingleAsync();
+        Assert.Null(untouched.RuleSetVersionId);
+        Assert.Null(Assert.Single(untouched.Parts).RuleSetVersionId);
+    }
+
+    [Fact]
+    public async Task BackfillExcludesMultiPartJobsFromSelectionAndSchemaMigration()
+    {
+        await using var db = fixture.CreateContext();
+        var userId = Guid.NewGuid();
+        db.Users.Add(new ApplicationUser { Id = userId, UserName = "multi-part@test" });
+        var source = DataSource.Create("Multi-part exclusion", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
+            LegacySchema(1), DateTimeOffset.UtcNow);
+        db.DataSources.Add(source);
+        await db.SaveChangesAsync();
+        var command = new BackfillRulesCommand(db, NullLogger<BackfillRulesCommand>.Instance);
+        await command.ExecuteAsync(userId, CancellationToken.None);
+
+        var multi = ImportJob.Create(source.Id, "multi.zip", "multi", new string('c', 64),
+            LegacySchema(5).ToJson(), 1, DateTimeOffset.UtcNow);
+        db.ImportJobs.Add(multi);
+        await db.SaveChangesAsync();
+        var now = DateTimeOffset.UtcNow;
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO import_parts (
+                id, import_job_id, part_index, part_type, source_name, source_locator,
+                status, last_committed_physical_row_number, processed_rows, valid_rows,
+                inserted_rows, updated_rows, invalid_rows, duplicate_rows,
+                deduplication_scope, created_at, updated_at)
+            VALUES ({Guid.NewGuid()}, {multi.Id}, 1, 1, 'second.csv', 'zip:second.csv',
+                1, 0, 0, 0, 0, 0, 0, 0, 'customer:job', {now}, {now})
+            """);
+        db.ChangeTracker.Clear();
+
+        var result = await command.ExecuteAsync(userId, CancellationToken.None);
+        Assert.Equal(0, result.JobsLinked);
+        Assert.Equal(0, result.SetsCreated);
+        Assert.Equal(0, result.VersionsCreated);
+        db.ChangeTracker.Clear();
+        var persisted = await db.ImportJobs.SingleAsync(j => j.Id == multi.Id);
+        Assert.Equal(2, persisted.Parts.Count);
+        Assert.Null(persisted.RuleSetVersionId);
+        Assert.All(persisted.Parts, p => Assert.Null(p.RuleSetVersionId));
+        Assert.All(persisted.Parts, p => Assert.Null(p.RuleDocumentId));
+        Assert.Equal(0, (await command.ExecuteAsync(userId, CancellationToken.None)).JobsLinked);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task LegacyWorker_UsesPartThenJobDocumentFallback(bool clearPart)
+    {
+        await using var db = fixture.CreateContext();
+        var userId = Guid.NewGuid();
+        db.Users.Add(new ApplicationUser { Id = userId, UserName = $"fallback-{clearPart}@test" });
+        var source = DataSource.Create("Fallback", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
+            LegacySchema(1), DateTimeOffset.UtcNow);
+        var job = ImportJob.Create(source.Id, "fallback.csv", "fallback", new string('a', 64),
+            source.SchemaJson, 1, DateTimeOffset.UtcNow);
+        db.AddRange(source, job);
+        await db.SaveChangesAsync();
+        await new BackfillRulesCommand(db, NullLogger<BackfillRulesCommand>.Instance).ExecuteAsync(userId, CancellationToken.None);
+        if (clearPart)
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE import_parts SET rule_set_version_id = NULL, rule_document_id = NULL, rule_snapshot_hash = NULL,
+                    rule_set_name_at_submission = NULL, rule_version_number_at_submission = NULL
+                WHERE import_job_id = {job.Id}
+                """);
+        }
+        else
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE import_jobs SET rule_set_version_id = NULL, rule_document_id = NULL, execution_fingerprint = NULL,
+                    rule_set_name_at_submission = NULL, rule_version_number_at_submission = NULL
+                WHERE id = {job.Id}
+                """);
+        }
+        db.ChangeTracker.Clear();
+
+        var options = Options.Create(new ImportProcessingOptions());
+        var reader = new LegacyReader("externalId,name,email,isActive\nfirst,First,first@example.com,true\n");
+        await new CsvImportProcessor(db, new ImportJobStore(db), reader, new CsvRowParser(options), options,
+            NullLogger<CsvImportProcessor>.Instance).ProcessAsync(job.Id, 1, Guid.NewGuid(), "worker", CancellationToken.None);
+
+        db.ChangeTracker.Clear();
+        var completed = await db.ImportJobs.SingleAsync(j => j.Id == job.Id);
+        Assert.Equal(ImportJobStatus.Completed, completed.Status);
+        Assert.Equal(1, completed.ProcessedRows);
+        Assert.Equal(ImportPartStatus.Completed, completed.Parts[0].Status);
+        if (clearPart)
+        {
+            Assert.Null(completed.Parts[0].RuleDocumentId);
+            Assert.NotNull(completed.RuleDocumentId);
+        }
+        else
+        {
+            Assert.NotNull(completed.Parts[0].RuleDocumentId);
+            Assert.Null(completed.RuleDocumentId);
+        }
+    }
+
+    private static string ExecutionFingerprint(Guid userId, Guid sourceId, string fileSha256, Guid? versionId) =>
+        Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+        { version = 2, userId, sourceId, FileSha256 = fileSha256, Format = AcceptedFileFormat.Csv, RuleSetVersionId = versionId })));
+
+    private sealed record ExpectedPins(Guid Version, Guid Document, string? ExecutionFingerprint,
+        string? RuleSetNameAtSubmission, int Number, string? Hash);
+
+    private static async Task AssertRestoredAsync(DataFlowDbContext db, Guid jobId, ExpectedPins expected)
+    {
+        db.ChangeTracker.Clear();
+        var restored = await db.ImportJobs.SingleAsync(j => j.Id == jobId);
+        var part = Assert.Single(restored.Parts);
+        Assert.Equal(expected.Version, restored.RuleSetVersionId);
+        Assert.Equal(expected.Document, restored.RuleDocumentId);
+        Assert.Equal(expected.ExecutionFingerprint, restored.ExecutionFingerprint);
+        Assert.Equal(expected.RuleSetNameAtSubmission, restored.RuleSetNameAtSubmission);
+        Assert.Equal(expected.Number, restored.RuleVersionNumberAtSubmission);
+        Assert.Equal(expected.Version, part.RuleSetVersionId);
+        Assert.Equal(expected.Document, part.RuleDocumentId);
+        Assert.Equal(expected.Hash, part.RuleSnapshotHash);
+        Assert.Equal(expected.RuleSetNameAtSubmission, part.RuleSetNameAtSubmission);
+        Assert.Equal(expected.Number, part.RuleVersionNumberAtSubmission);
     }
 
     private sealed class LegacyReader(string content) : IImportFileReader

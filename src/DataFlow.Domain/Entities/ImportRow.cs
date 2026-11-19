@@ -15,6 +15,7 @@ public sealed class ImportRow
 
     private ImportRow(
         Guid importJobId,
+        Guid importPartId,
         int rowNumber,
         ImportRowStatus status,
         string? rawData,
@@ -25,6 +26,7 @@ public sealed class ImportRow
     {
         Id = Guid.NewGuid();
         ImportJobId = importJobId;
+        ImportPartId = importPartId;
         RowNumber = rowNumber;
         Status = status;
         RawData = rawData;
@@ -43,6 +45,7 @@ public sealed class ImportRow
 
     public Guid Id { get; private set; }
     public Guid ImportJobId { get; private set; }
+    public Guid ImportPartId { get; private set; }
     public int RowNumber { get; private set; }
     public ImportRowStatus Status { get; private set; }
     public string? RawData { get; private set; }
@@ -65,6 +68,7 @@ public sealed class ImportRow
 
     public static ImportRow Create(
         Guid importJobId,
+        Guid importPartId,
         int rowNumber,
         ImportRowStatus status,
         string? rawData,
@@ -73,9 +77,9 @@ public sealed class ImportRow
         DateTimeOffset createdAtUtc,
         string? rowHash = null)
     {
-        if (importJobId == Guid.Empty || rowNumber <= 0 || !Enum.IsDefined(status))
+        if (importJobId == Guid.Empty || importPartId == Guid.Empty || rowNumber <= 0 || !Enum.IsDefined(status))
         {
-            throw new DomainException("invalid_import_row", "Import row requires a job id, positive row number and valid status.");
+            throw new DomainException("invalid_import_row", "Import row requires job and part ids, a positive row number and valid status.");
         }
 
         if (status == ImportRowStatus.Invalid && (string.IsNullOrWhiteSpace(rawData) || errors is not { Count: > 0 }))
@@ -94,6 +98,7 @@ public sealed class ImportRow
 
         return new ImportRow(
             importJobId,
+            importPartId,
             rowNumber,
             status,
             normalizedRaw,

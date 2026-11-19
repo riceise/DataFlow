@@ -37,6 +37,7 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
         {
             if (await store.CancellationRequestedAsync(lease, cancellationToken)) { throw new ImportCancellationRequestedException(); }
             snapshot = await database.ImportJobs.AsNoTracking().SingleAsync(x => x.Id == jobId, cancellationToken);
+            var part = await database.ImportParts.AsNoTracking().SingleAsync(x => x.ImportJobId == jobId, cancellationToken);
             var extension = Path.GetExtension(snapshot.OriginalFileName);
             var isCsv = string.Equals(extension, ".csv", StringComparison.OrdinalIgnoreCase);
             var isXlsx = string.Equals(extension, ".xlsx", StringComparison.OrdinalIgnoreCase);
@@ -46,7 +47,7 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
             }
             var schema = DataSourceSchema.FromJson(snapshot.SchemaJson);
             RuleDefinition? definition = null;
-            if (snapshot.RuleDocumentId is { } documentId)
+            if ((part.RuleDocumentId ?? snapshot.RuleDocumentId) is { } documentId)
             {
                 var document = await database.RuleDocuments.AsNoTracking().SingleAsync(d => d.Id == documentId, cancellationToken);
                 if (document.EngineVersion == "rules-v1")
@@ -64,13 +65,13 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
                 }
             }
             // Restore only keys, never raw records or customers, when taking over a committed prefix.
-            var keys = await database.ImportRows.AsNoTracking().Where(x => x.ImportJobId == jobId && x.NaturalKey != null)
+            var keys = await database.ImportRows.AsNoTracking().Where(x => x.ImportPartId == part.Id && x.NaturalKey != null)
                 .Select(x => x.NaturalKey!).ToListAsync(cancellationToken);
             var processor = definition is null ? new CustomerFileRowProcessor(snapshot.DataSourceId, schema, keys) : null;
             var ruleProcessor = definition is null ? null : new RuleRowProcessor(snapshot.DataSourceId, definition, keys);
             var batch = new List<ImportBatchRow>(options.Value.BatchSize);
             var total = 0;
-            var lastCheckpoint = (int)snapshot.LastCommittedRowNumber;
+            var lastCheckpoint = (int)part.LastCommittedPhysicalRowNumber;
             await using var stream = await storage.OpenReadAsync(snapshot.StorageKey, cancellationToken);
             var rows = isCsv
                 ? parser.ParseAsync(stream, schema, cancellationToken)
@@ -78,7 +79,7 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
             await foreach (var row in rows)
             {
                 if (!row.IsEmpty) { total++; }
-                if (row.CheckpointRowNumber <= snapshot.LastCommittedRowNumber) { continue; }
+                if (row.CheckpointRowNumber <= part.LastCommittedPhysicalRowNumber) { continue; }
                 lastCheckpoint = row.CheckpointRowNumber;
                 if (row.IsEmpty) { continue; }
                 if (batch.Count == 0 && await store.CancellationRequestedAsync(lease, cancellationToken))
@@ -119,7 +120,9 @@ public sealed class CsvImportProcessor(DataFlowDbContext database, ImportJobStor
                 _ => "import_infrastructure_error"
             };
             var retryable = exception is not (ImportFileException or DomainException);
-            await store.FinalizeAsync(lease, messageId, null, code, retryable, cancellationToken, attempt);
+            int? failureRowNumber = exception is ImportFileException { RowNumber: > 0 } fileException ? fileException.RowNumber : null;
+            await store.FinalizeAsync(lease, messageId, null, code, retryable, cancellationToken, attempt,
+                failureRowNumber: failureRowNumber);
             if (retryable) { DataFlowTelemetry.Errors.Add(1, new KeyValuePair<string, object?>("dependency", "import_io")); }
             logger.LogWarning("Import failed with {ErrorCode}; retryable: {Retryable}; error type: {ErrorType}; message: {Message}", code, retryable, exception.GetType().Name, exception.Message);
         }

@@ -103,7 +103,7 @@ public sealed class UploadFileHandler(DataFlowDbContext database, IFileStorage s
                 throw new DomainException("file_format_not_allowed", "File format is not allowed.");
             }
 
-            var job = ImportJob.Create(source.Id, request.FileName, key, request.FileSha256, source.SchemaJson, source.SchemaVersion, now);
+            var job = ImportJob.Create(source.Id, request.FileName, key, request.FileSha256, source.SchemaJson, source.SchemaVersion, now, source.DataType);
             activity?.SetTag("job.id", job.Id);
             using var jobScope = logger.BeginScope(new Dictionary<string, object>
             {
@@ -112,7 +112,9 @@ public sealed class UploadFileHandler(DataFlowDbContext database, IFileStorage s
             });
             if (selectedVersion is not null)
             {
-                job.PinRules(selectedVersion.Id, selectedVersion.RuleDocumentId, fingerprint, ruleSet!.Name, selectedVersion.VersionNumber);
+                var document = await database.RuleDocuments.AsNoTracking().SingleAsync(d => d.Id == selectedVersion.RuleDocumentId, cancellationToken);
+                job.PinRules(selectedVersion.Id, selectedVersion.RuleDocumentId, document.ContentHash, fingerprint,
+                    ruleSet!.Name, selectedVersion.VersionNumber, source.DataType);
             }
 
             var upload = UploadRequest.Create(request.IdempotencyKey, fingerprint, source.Id, key, request.FileSha256, now);

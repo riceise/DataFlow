@@ -62,7 +62,8 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)")
-                        .HasColumnName("natural_key");
+                        .HasColumnName("natural_key")
+                        .UseCollation("C");
 
                     b.Property<DateOnly?>("RegisteredAt")
                         .HasColumnType("date")
@@ -335,6 +336,161 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("DataFlow.Domain.Entities.ImportPart", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DeduplicationScope")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("deduplication_scope");
+
+                    b.Property<long>("DuplicateRows")
+                        .HasColumnType("bigint")
+                        .HasColumnName("duplicate_rows");
+
+                    b.Property<Guid>("ImportJobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("import_job_id");
+
+                    b.Property<long>("InsertedRows")
+                        .HasColumnType("bigint")
+                        .HasColumnName("inserted_rows");
+
+                    b.Property<long>("InvalidRows")
+                        .HasColumnType("bigint")
+                        .HasColumnName("invalid_rows");
+
+                    b.Property<long>("LastCommittedPhysicalRowNumber")
+                        .HasColumnType("bigint")
+                        .HasColumnName("last_committed_physical_row_number");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("last_error_code");
+
+                    b.Property<int?>("LastErrorRowNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("last_error_row_number");
+
+                    b.Property<int>("PartIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("part_index");
+
+                    b.Property<int>("PartType")
+                        .HasColumnType("integer")
+                        .HasColumnName("part_type");
+
+                    b.Property<long>("ProcessedRows")
+                        .HasColumnType("bigint")
+                        .HasColumnName("processed_rows");
+
+                    b.Property<Guid?>("RuleDocumentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_document_id");
+
+                    b.Property<string>("RuleSetNameAtSubmission")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("rule_set_name_at_submission");
+
+                    b.Property<Guid?>("RuleSetVersionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("rule_set_version_id");
+
+                    b.Property<string>("RuleSnapshotHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("rule_snapshot_hash");
+
+                    b.Property<int?>("RuleVersionNumberAtSubmission")
+                        .HasColumnType("integer")
+                        .HasColumnName("rule_version_number_at_submission");
+
+                    b.Property<int?>("SheetIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("sheet_index");
+
+                    b.Property<string>("SheetName")
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("sheet_name");
+
+                    b.Property<string>("SourceLocator")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)")
+                        .HasColumnName("source_locator");
+
+                    b.Property<string>("SourceName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("source_name");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<int?>("TotalRows")
+                        .HasColumnType("integer")
+                        .HasColumnName("total_rows");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("UpdatedRows")
+                        .HasColumnType("bigint")
+                        .HasColumnName("updated_rows");
+
+                    b.Property<long>("ValidRows")
+                        .HasColumnType("bigint")
+                        .HasColumnName("valid_rows");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("Id", "ImportJobId")
+                        .HasName("ak_import_parts_id_import_job_id");
+
+                    b.HasIndex("ImportJobId", "PartIndex")
+                        .IsUnique()
+                        .HasDatabaseName("ux_import_parts_job_part_index");
+
+                    b.HasIndex("RuleSetVersionId", "RuleDocumentId");
+
+                    b.HasIndex("ImportJobId", "DeduplicationScope", "Id")
+                        .HasDatabaseName("ix_import_parts_job_deduplication_scope");
+
+                    b.ToTable("import_parts", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_import_parts_counters", "processed_rows = valid_rows + inserted_rows + updated_rows + invalid_rows + duplicate_rows AND valid_rows >= 0 AND inserted_rows >= 0 AND updated_rows >= 0 AND invalid_rows >= 0 AND duplicate_rows >= 0 AND (total_rows IS NULL OR total_rows >= processed_rows) AND last_committed_physical_row_number >= 0");
+
+                            t.HasCheckConstraint("ck_import_parts_deduplication_scope", "(status = 7 AND deduplication_scope IS NULL) OR (status <> 7 AND deduplication_scope IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_import_parts_identity", "part_index >= 0 AND part_type BETWEEN 1 AND 4 AND (sheet_index IS NULL OR sheet_index >= 0)");
+
+                            t.HasCheckConstraint("ck_import_parts_rules", "(rule_set_version_id IS NULL AND rule_document_id IS NULL AND rule_snapshot_hash IS NULL) OR (rule_set_version_id IS NOT NULL AND rule_document_id IS NOT NULL AND rule_snapshot_hash IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_import_parts_status", "status BETWEEN 1 AND 7");
+                        });
+                });
+
             modelBuilder.Entity("DataFlow.Domain.Entities.ImportRow", b =>
                 {
                     b.Property<Guid>("Id")
@@ -353,10 +509,15 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("import_job_id");
 
+                    b.Property<Guid>("ImportPartId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("import_part_id");
+
                     b.Property<string>("NaturalKey")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)")
-                        .HasColumnName("natural_key");
+                        .HasColumnName("natural_key")
+                        .UseCollation("C");
 
                     b.Property<DateTimeOffset>("ProcessedAt")
                         .HasColumnType("timestamp with time zone")
@@ -381,13 +542,15 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("ImportJobId", "NaturalKey")
-                        .HasDatabaseName("ix_import_rows_job_natural_key")
+                    b.HasIndex("ImportPartId", "ImportJobId");
+
+                    b.HasIndex("ImportPartId", "NaturalKey")
+                        .HasDatabaseName("ix_import_rows_part_natural_key")
                         .HasFilter("natural_key IS NOT NULL");
 
-                    b.HasIndex("ImportJobId", "RowNumber")
+                    b.HasIndex("ImportPartId", "RowNumber")
                         .IsUnique()
-                        .HasDatabaseName("ux_import_rows_job_row_number");
+                        .HasDatabaseName("ux_import_rows_part_row_number");
 
                     b.HasIndex("ImportJobId", "Status", "RowNumber")
                         .HasDatabaseName("ix_import_rows_job_status_row_number");
@@ -1022,13 +1185,30 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
                 });
 
-            modelBuilder.Entity("DataFlow.Domain.Entities.ImportRow", b =>
+            modelBuilder.Entity("DataFlow.Domain.Entities.ImportPart", b =>
                 {
                     b.HasOne("DataFlow.Domain.Entities.ImportJob", null)
-                        .WithMany()
+                        .WithMany("Parts")
                         .HasForeignKey("ImportJobId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("DataFlow.Domain.Entities.RuleSetVersion", null)
+                        .WithMany()
+                        .HasForeignKey("RuleSetVersionId", "RuleDocumentId")
+                        .HasPrincipalKey("Id", "RuleDocumentId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.ImportRow", b =>
+                {
+                    b.HasOne("DataFlow.Domain.Entities.ImportPart", null)
+                        .WithMany()
+                        .HasForeignKey("ImportPartId", "ImportJobId")
+                        .HasPrincipalKey("Id", "ImportJobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_import_rows_import_part");
                 });
 
             modelBuilder.Entity("DataFlow.Domain.Entities.ProcessedMessage", b =>
@@ -1150,6 +1330,11 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.ImportJob", b =>
+                {
+                    b.Navigation("Parts");
                 });
 #pragma warning restore 612, 618
         }

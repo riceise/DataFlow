@@ -29,17 +29,26 @@ public sealed class ImportJobStore(DataFlowDbContext database)
     public async Task<ImportLease?> AcquireAsync(Guid jobId, int runVersion, string owner, int leaseSeconds, CancellationToken cancellationToken, int attempt = 1)
     {
         var versions = await database.Database.SqlQuery<int>($"""
-            UPDATE import_jobs SET lease_owner = {owner}, lease_version = lease_version + 1,
-                lease_until = clock_timestamp() + make_interval(secs => {leaseSeconds}), status = 2,
-                next_attempt_at = NULL, started_at = COALESCE(started_at, clock_timestamp()),
-                attempt_count = attempt_count + 1, updated_at = clock_timestamp()
-            WHERE id = {jobId} AND run_version = {runVersion} AND
-                NOT EXISTS (SELECT 1 FROM outbox_messages o WHERE o.type = 'import.job.created'
-                    AND o.payload->>'jobId' = {jobId.ToString()} AND o.payload->>'runVersion' = {runVersion.ToString()}
-                    AND COALESCE((o.payload->>'attempt')::int, 1) > {attempt}) AND
-                (status = 1 OR (status = 3 AND (next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()))
-                 OR (status = 2 AND lease_until <= clock_timestamp()))
-            RETURNING lease_version AS "Value"
+            WITH acquired AS (
+                UPDATE import_jobs SET lease_owner = {owner}, lease_version = lease_version + 1,
+                    lease_until = clock_timestamp() + make_interval(secs => {leaseSeconds}), status = 2,
+                    next_attempt_at = NULL, started_at = COALESCE(started_at, clock_timestamp()),
+                    attempt_count = attempt_count + 1, updated_at = clock_timestamp()
+                WHERE id = {jobId} AND run_version = {runVersion} AND
+                    (SELECT count(*) FROM import_parts p WHERE p.import_job_id = import_jobs.id) = 1 AND
+                    EXISTS (SELECT 1 FROM import_parts p WHERE p.import_job_id = import_jobs.id AND p.status IN (1, 2)) AND
+                    NOT EXISTS (SELECT 1 FROM outbox_messages o WHERE o.type = 'import.job.created'
+                        AND o.payload->>'jobId' = {jobId.ToString()} AND o.payload->>'runVersion' = {runVersion.ToString()}
+                        AND COALESCE((o.payload->>'attempt')::int, 1) > {attempt}) AND
+                    (status = 1 OR (status = 3 AND (next_attempt_at IS NULL OR next_attempt_at <= clock_timestamp()))
+                     OR (status = 2 AND lease_until <= clock_timestamp()))
+                RETURNING id, lease_version
+            ), started AS (
+                UPDATE import_parts p SET status = 2, started_at = COALESCE(p.started_at, clock_timestamp()),
+                    updated_at = clock_timestamp()
+                FROM acquired a WHERE p.import_job_id = a.id AND p.status = 1
+            )
+            SELECT lease_version AS "Value" FROM acquired
             """).ToListAsync(cancellationToken);
         return versions.Count == 0 ? null : new(jobId, runVersion, owner, versions[0]);
     }
@@ -66,7 +75,7 @@ public sealed class ImportJobStore(DataFlowDbContext database)
                 ? row.Validation.IsTabular ? ImportRowStatus.Valid : await UpsertAsync(job.DataSourceId, row.Validation, cancellationToken)
                 : ImportRowStatus.Invalid;
             counts[(int)status]++;
-            database.ImportRows.Add(ImportRow.Create(job.Id, row.Parsed.RowNumber, status,
+            database.ImportRows.Add(ImportRow.Create(job.Id, job.Parts[0].Id, row.Parsed.RowNumber, status,
                 status == ImportRowStatus.Invalid ? row.Parsed.RawData : null,
                 row.Validation.NaturalKey, row.Validation.Errors, processedAt, row.Validation.RowHash));
         }
@@ -88,7 +97,7 @@ public sealed class ImportJobStore(DataFlowDbContext database)
 
     public async Task FinalizeAsync(ImportLease lease, Guid messageId, int? totalRows,
         string? failureCode, bool retryable, CancellationToken cancellationToken, int attempt = 1,
-        int? lastCheckpointRowNumber = null)
+        int? lastCheckpointRowNumber = null, int? failureRowNumber = null)
     {
         database.ChangeTracker.Clear();
         await using var transaction = await database.Database.BeginTransactionAsync(cancellationToken);
@@ -96,6 +105,7 @@ public sealed class ImportJobStore(DataFlowDbContext database)
         var job = await LockAsync(lease, cancellationToken);
         var deadline = job.LeaseUntil!.Value;
         var now = await VerifyAsync(job, lease, cancellationToken);
+        if (!job.CancelRequested && failureCode is not null) { job.RecordPartError(failureCode, failureRowNumber, now); }
         if (job.CancelRequested) { job.ConfirmCancel(now); }
         else if (failureCode is not null && retryable && attempt < 4)
         {
@@ -105,7 +115,7 @@ public sealed class ImportJobStore(DataFlowDbContext database)
         else if (failureCode is not null)
         {
             job.Fail(retryable ? "import_retry_exhausted" : failureCode,
-                retryable ? "Import retry limit reached." : "The import file cannot be processed.", retryable, now);
+                retryable ? "Import retry limit reached." : "The import file cannot be processed.", retryable, now, failureRowNumber);
             if (retryable) { database.OutboxMessages.Add(ImportRecoveryMessage.Create(job, attempt, now, dead: true)); }
         }
         else
@@ -150,7 +160,7 @@ public sealed class ImportJobStore(DataFlowDbContext database)
     private async Task<ImportJob> LockAsync(ImportLease lease, CancellationToken cancellationToken)
     {
         var job = await database.ImportJobs.FromSqlInterpolated($"SELECT * FROM import_jobs WHERE id = {lease.JobId} FOR UPDATE")
-            .SingleAsync(cancellationToken);
+            .Include(x => x.Parts).SingleAsync(cancellationToken);
         await VerifyAsync(job, lease, cancellationToken);
         return job;
     }

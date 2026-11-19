@@ -54,7 +54,7 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
         }
 
         Assert.Equal(new[] { "AspNetRoleClaims", "AspNetRoles", "AspNetUserClaims", "AspNetUserLogins", "AspNetUserRoles", "AspNetUserTokens", "AspNetUsers",
-            "customers", "data_sources", "import_jobs", "import_rows", "outbox_messages", "processed_messages", "rule_documents", "rule_set_versions", "rule_sets",
+            "customers", "data_sources", "import_jobs", "import_parts", "import_rows", "outbox_messages", "processed_messages", "rule_documents", "rule_set_versions", "rule_sets",
             "rule_version_grants", "rule_version_publications", "upload_requests", "user_rule_library_entries" }, tables);
     }
 
@@ -66,7 +66,7 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
         var job = NewJob(source, localNow);
         var originalSchema = job.SchemaJson;
         var customer = NewCustomer(source, "customer-1", localNow);
-        var row = ImportRow.Create(job.Id, 2, ImportRowStatus.Invalid, "{\"email\":\"invalid\"}", "bad-key",
+        var row = ImportRow.Create(job.Id, job.Parts[0].Id, 2, ImportRowStatus.Invalid, "{\"email\":\"invalid\"}", "bad-key",
             [new ImportRowError("email", "invalid_email", "Invalid email")], localNow, new string('b', 64));
         var outbox = OutboxMessage.Create("ImportJobRequested.v1", JsonSerializer.Serialize(new { job.Id }), localNow);
         var upload = UploadRequest.Create(Guid.NewGuid().ToString(), new string('a', 64), source.Id, "uploads/file", new string('b', 64), localNow);
@@ -113,7 +113,7 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
 
     [Theory]
     [InlineData("customer", "ux_customers_source_natural_key")]
-    [InlineData("row", "ux_import_rows_job_row_number")]
+    [InlineData("row", "ux_import_rows_part_row_number")]
     [InlineData("upload", "ux_upload_requests_source_idempotency_key")]
     [InlineData("processed", "PK_processed_messages")]
     public async Task DuplicateKeys_AreRejectedByPostgreSql(string kind, string constraint)
@@ -155,9 +155,9 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
         var second = NewJob(source);
         await using var context = fixture.CreateContext();
         context.AddRange(source, first, second,
-            ImportRow.Create(first.Id, 2, ImportRowStatus.Inserted, null, "same-key", null, Now),
-            ImportRow.Create(first.Id, 3, ImportRowStatus.Duplicate, null, "same-key", null, Now),
-            ImportRow.Create(second.Id, 2, ImportRowStatus.Inserted, null, "same-key", null, Now));
+            ImportRow.Create(first.Id, first.Parts[0].Id, 2, ImportRowStatus.Inserted, null, "same-key", null, Now),
+            ImportRow.Create(first.Id, first.Parts[0].Id, 3, ImportRowStatus.Duplicate, null, "same-key", null, Now),
+            ImportRow.Create(second.Id, second.Parts[0].Id, 2, ImportRowStatus.Inserted, null, "same-key", null, Now));
         await context.SaveChangesAsync();
         Assert.Equal(2, await context.ImportRows.CountAsync(row => row.ImportJobId == first.Id && row.NaturalKey == "same-key"));
     }
@@ -175,7 +175,7 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
         }
 
         var customer = NewCustomer(source, "rolled-back");
-        var row = ImportRow.Create(job.Id, 2, ImportRowStatus.Inserted, null, customer.NaturalKey, null, Now);
+        var row = ImportRow.Create(job.Id, job.Parts[0].Id, 2, ImportRowStatus.Inserted, null, customer.NaturalKey, null, Now);
         var outbox = OutboxMessage.Create("Completed.v1", "{}", Now);
         var processed = ProcessedMessage.Create(Guid.NewGuid().ToString(), job.Id, 1, Now);
         await using (var context = fixture.CreateContext())
@@ -244,6 +244,40 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
         Assert.Equal(constraint, error.ConstraintName);
     }
 
+    [Theory]
+    [InlineData("UPDATE import_parts SET processed_rows = 1 WHERE id = @id", "ck_import_parts_counters")]
+    [InlineData("UPDATE import_parts SET status = 99 WHERE id = @id", "ck_import_parts_status")]
+    [InlineData("UPDATE import_parts SET deduplication_scope = NULL WHERE id = @id", "ck_import_parts_deduplication_scope")]
+    public async Task Database_RejectsBrokenPartInvariants(string sql, string constraint)
+    {
+        var source = NewSource();
+        var job = NewJob(source);
+        await using var context = fixture.CreateContext();
+        context.AddRange(source, job);
+        await context.SaveChangesAsync();
+        var error = await Assert.ThrowsAsync<PostgresException>(() =>
+            context.Database.ExecuteSqlRawAsync(sql, new NpgsqlParameter("id", job.Parts[0].Id)));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, error.SqlState);
+        Assert.Equal(constraint, error.ConstraintName);
+    }
+
+    [Fact]
+    public async Task ImportRowCompositeKey_RejectsPartFromAnotherJob()
+    {
+        var source = NewSource();
+        var first = NewJob(source);
+        var second = NewJob(source);
+        await using var context = fixture.CreateContext();
+        context.AddRange(source, first, second);
+        await context.SaveChangesAsync();
+        context.ImportRows.Add(ImportRow.Create(first.Id, second.Parts[0].Id, 2, ImportRowStatus.Inserted,
+            null, "foreign-part", null, Now));
+        var error = await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+        var postgres = Assert.IsType<PostgresException>(error.InnerException);
+        Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, postgres.SqlState);
+        Assert.Equal("fk_import_rows_import_part", postgres.ConstraintName);
+    }
+
     [Fact]
     public async Task ForeignKeys_RejectOrphanJobAndDeletionOfUsedSource()
     {
@@ -303,8 +337,8 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
             Assert.Contains("(created_at DESC)", indexes["ix_import_jobs_created_at"]);
             Assert.Contains("(status, created_at DESC)", indexes["ix_import_jobs_status_created_at"]);
             Assert.Contains("(import_job_id, status, row_number)", indexes["ix_import_rows_job_status_row_number"]);
-            Assert.Contains("(import_job_id, natural_key)", indexes["ix_import_rows_job_natural_key"]);
-            Assert.Contains("WHERE (natural_key IS NOT NULL)", indexes["ix_import_rows_job_natural_key"]);
+            Assert.Contains("(import_part_id, natural_key)", indexes["ix_import_rows_part_natural_key"]);
+            Assert.Contains("WHERE (natural_key IS NOT NULL)", indexes["ix_import_rows_part_natural_key"]);
             Assert.Contains("WHERE (published_at IS NULL)", indexes["ix_outbox_messages_unpublished"]);
         }
 
@@ -337,7 +371,7 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
     private static object DuplicateEntity(string kind, DataSource source, ImportJob job, string key) => kind switch
     {
         "customer" => NewCustomer(source, key),
-        "row" => ImportRow.Create(job.Id, 2, ImportRowStatus.Inserted, null, key, null, Now),
+        "row" => ImportRow.Create(job.Id, job.Parts[0].Id, 2, ImportRowStatus.Inserted, null, key, null, Now),
         "upload" => UploadRequest.Create(key, new string('a', 64), source.Id, "uploads/file", new string('b', 64), Now),
         "processed" => ProcessedMessage.Create(key, job.Id, 1, Now),
         _ => throw new ArgumentOutOfRangeException(nameof(kind))

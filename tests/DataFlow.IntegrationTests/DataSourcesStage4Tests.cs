@@ -63,6 +63,7 @@ public sealed class DataSourcesStage4Tests(DataSourcesApiFixture fixture) : ICla
     public async Task InitializeAsync()
     {
         await using var database = fixture.CreateContext();
+        await database.ImportParts.ExecuteDeleteAsync();
         await database.ImportJobs.ExecuteDeleteAsync();
         await database.DataSources.ExecuteDeleteAsync();
     }

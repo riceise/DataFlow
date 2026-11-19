@@ -57,7 +57,8 @@ public static class RuleSourceEndpoints
             var job = await db.ImportJobs.AsNoTracking().SingleOrDefaultAsync(j => j.Id == id &&
                 db.DataSources.Any(s => s.Id == j.DataSourceId && s.OwnerUserId == user.UserId), ct)
                 ?? throw new DomainException("job_not_found", "Job was not found.");
-            var json = job.RuleDocumentId is { } doc ? await db.RuleDocuments.Where(d => d.Id == doc).Select(d => d.DefinitionJson).SingleAsync(ct) : job.SchemaJson;
+            var documentId = job.Parts.Count == 1 ? job.Parts[0].RuleDocumentId ?? job.RuleDocumentId : job.RuleDocumentId;
+            var json = documentId is { } doc ? await db.RuleDocuments.Where(d => d.Id == doc).Select(d => d.DefinitionJson).SingleAsync(ct) : job.SchemaJson;
             return Results.Ok(JsonSerializer.Deserialize<JsonElement>(json));
         });
     }

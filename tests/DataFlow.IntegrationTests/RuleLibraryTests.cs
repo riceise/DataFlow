@@ -122,6 +122,34 @@ public sealed class RuleLibraryTests(DataSourcesApiFixture fixture) : IClassFixt
         Assert.Equal(0, await db.Customers.CountAsync(c => c.DataSourceId == sourceId));
     }
 
+    [Fact]
+    public async Task RuleDefinition_UsesSinglePartDocumentBeforeJobFallback()
+    {
+        var storage = new FileUploadsStage5Tests.FakeStorage();
+        await using var factory = fixture.WithWebHostBuilder(b => b.ConfigureServices(s => s.Replace(ServiceDescriptor.Singleton<IFileStorage>(storage))));
+        using var client = factory.CreateClient(new() { BaseAddress = new("https://localhost") });
+        using var created = await client.PostAsJsonAsync("/api/v1/rule-sets", new SaveRuleSetRequest("Part fallback", null, Definition()));
+        created.EnsureSuccessStatusCode();
+        var version = (await created.Content.ReadFromJsonAsync<RuleVersionDto>())!;
+        using var sourceResponse = await client.PostAsJsonAsync("/api/v1/rule-sources", new { name = "Part fallback", ruleSetVersionId = version.Id });
+        sourceResponse.EnsureSuccessStatusCode();
+        var sourceId = (await sourceResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var accepted = await Upload(client, sourceId, version.Id, Guid.NewGuid().ToString("N"));
+
+        await using var db = fixture.CreateContext();
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE import_jobs SET rule_set_version_id = NULL, rule_document_id = NULL, execution_fingerprint = NULL,
+                rule_set_name_at_submission = NULL, rule_version_number_at_submission = NULL
+            WHERE id = {accepted.JobId}
+            """);
+
+        var definition = await client.GetFromJsonAsync<JsonElement>($"/api/v1/jobs/{accepted.JobId}/rule-definition");
+        Assert.Equal("Tabular", definition.GetProperty("dataType").GetString());
+        Assert.Equal("code", definition.GetProperty("keyFields")[0].GetString());
+        var amount = definition.GetProperty("fields").EnumerateArray().Single(f => f.GetProperty("name").GetString() == "amount");
+        Assert.Equal(10, amount.GetProperty("maximum").GetInt32());
+    }
+
     private static async Task<RuleVersionDto> Version(HttpClient client, Guid id, int maximum)
     {
         using var response = await client.PostAsJsonAsync($"/api/v1/rule-sets/{id}/versions", new SaveRuleVersionRequest(Definition(maximum)));

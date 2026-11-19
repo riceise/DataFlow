@@ -36,3 +36,22 @@ public enum ImportRowStatus
     Duplicate = 4,
     Valid = 5
 }
+
+public enum ImportPartStatus
+{
+    Pending = 1,
+    Processing = 2,
+    Completed = 3,
+    CompletedWithErrors = 4,
+    Failed = 5,
+    Cancelled = 6,
+    Skipped = 7
+}
+
+public enum ImportPartType
+{
+    Csv = 1,
+    XlsxWorksheet = 2,
+    ZipCsvEntry = 3,
+    Other = 4
+}

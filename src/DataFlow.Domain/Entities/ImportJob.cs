@@ -5,6 +5,8 @@ namespace DataFlow.Domain.Entities;
 
 public sealed class ImportJob
 {
+    private readonly List<ImportPart> _parts = [];
+
     private ImportJob()
     {
         OriginalFileName = string.Empty;
@@ -21,7 +23,8 @@ public sealed class ImportJob
         string fileSha256,
         string schemaJson,
         int schemaVersion,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        DataSourceDataType dataType)
     {
         Id = id;
         DataSourceId = dataSourceId;
@@ -34,8 +37,10 @@ public sealed class ImportJob
         RunVersion = 1;
         CreatedAt = nowUtc;
         UpdatedAt = nowUtc;
+        _parts.Add(ImportPart.CreateSingle(this, nowUtc, dataType));
     }
 
+    public IReadOnlyList<ImportPart> Parts => _parts.AsReadOnly();
     public Guid Id { get; private set; }
     public Guid DataSourceId { get; private set; }
     public Guid? RuleSetVersionId { get; private set; }
@@ -44,7 +49,8 @@ public sealed class ImportJob
     public string? RuleSetNameAtSubmission { get; private set; }
     public int? RuleVersionNumberAtSubmission { get; private set; }
     public long ValidRows { get; private set; }
-    public void PinRules(Guid version, Guid document, string fingerprint, string name, int number)
+    public void PinRules(Guid version, Guid document, string snapshotHash, string fingerprint, string name, int number,
+        DataSourceDataType dataType)
     {
         if (RuleDocumentId is not null || ProcessedRows != 0)
         {
@@ -53,17 +59,26 @@ public sealed class ImportJob
 
         RuleSetVersionId = version; RuleDocumentId = document; ExecutionFingerprint = fingerprint;
         RuleSetNameAtSubmission = name; RuleVersionNumberAtSubmission = number;
+        SinglePart().PinRules(version, document, snapshotHash, name, number, dataType, migration: false);
     }
-    public void MigrateLegacyRules(Guid version, Guid document, string fingerprint, string name, int number)
+    public void MigrateLegacyRules(Guid version, Guid document, string snapshotHash, string fingerprint, string name, int number,
+        DataSourceDataType dataType = DataSourceDataType.Customer)
     {
-        if (RuleDocumentId is not null || RuleSetVersionId is not null || number != SchemaVersion ||
-            version == Guid.Empty || document == Guid.Empty)
+        var jobWasUnpinned = RuleSetVersionId is null && RuleDocumentId is null;
+        var partWasPinned = Parts.Count == 1 && Parts[0].RuleSetVersionId is not null && Parts[0].RuleDocumentId is not null;
+        if (version == Guid.Empty || document == Guid.Empty ||
+            (jobWasUnpinned && !partWasPinned && number != SchemaVersion))
         {
-            throw new DomainException("rules_already_pinned", "Only an unpinned legacy job can be migrated.");
+            throw new DomainException("rules_already_pinned", "Only a compatible legacy job can be migrated.");
         }
 
-        RuleSetVersionId = version; RuleDocumentId = document; ExecutionFingerprint = fingerprint;
-        RuleSetNameAtSubmission = name; RuleVersionNumberAtSubmission = number;
+        EnsureCompatibleRules(version, document, name, number);
+        RuleSetVersionId ??= version;
+        RuleDocumentId ??= document;
+        ExecutionFingerprint = jobWasUnpinned ? fingerprint : ExecutionFingerprint ?? fingerprint;
+        RuleSetNameAtSubmission ??= name;
+        RuleVersionNumberAtSubmission ??= number;
+        SinglePart().MigrateRules(version, document, snapshotHash, name, number, dataType);
     }
     public string OriginalFileName { get; private set; }
     public string StorageKey { get; private set; }
@@ -102,7 +117,8 @@ public sealed class ImportJob
         string fileSha256,
         string schemaJson,
         int schemaVersion,
-        DateTimeOffset nowUtc)
+        DateTimeOffset nowUtc,
+        DataSourceDataType dataType = DataSourceDataType.Customer)
     {
         if (dataSourceId == Guid.Empty)
         {
@@ -137,7 +153,8 @@ public sealed class ImportJob
             fileSha256,
             schemaJson,
             schemaVersion,
-            nowUtc.ToUniversalTime());
+            nowUtc.ToUniversalTime(),
+            dataType);
     }
 
     public void AcquireLease(string owner, DateTimeOffset nowUtc, int leaseSeconds)
@@ -164,6 +181,7 @@ public sealed class ImportJob
         NextAttemptAt = null;
         StartedAt ??= nowUtc;
         AttemptCount += 1;
+        SinglePart().Start(nowUtc);
         UpdatedAt = nowUtc.ToUniversalTime();
     }
 
@@ -241,6 +259,7 @@ public sealed class ImportJob
         DuplicateRows += duplicate;
         ValidRows += valid;
         ProcessedRows = ValidRows + InsertedRows + UpdatedRows + InvalidRows + DuplicateRows;
+        SinglePart().RecordBatchCompletion(lastRowNumberInBatch, inserted, updated, invalid, duplicate, valid, nowUtc);
         UpdatedAt = nowUtc.ToUniversalTime();
     }
 
@@ -257,6 +276,7 @@ public sealed class ImportJob
         }
 
         TotalRows = totalRows;
+        SinglePart().SetTotalRows(totalRows, nowUtc);
         UpdatedAt = nowUtc.ToUniversalTime();
     }
 
@@ -289,6 +309,7 @@ public sealed class ImportJob
         LastErrorCode = null;
         LeaseOwner = null;
         LeaseUntil = null;
+        SinglePart().Cancel(nowUtc);
     }
 
     public void Complete(DateTimeOffset nowUtc)
@@ -327,9 +348,10 @@ public sealed class ImportJob
         Retryable = 0;
         LeaseOwner = null;
         LeaseUntil = null;
+        SinglePart().Complete(nowUtc);
     }
 
-    public void Fail(string errorCode, string message, bool retryable, DateTimeOffset nowUtc)
+    public void Fail(string errorCode, string message, bool retryable, DateTimeOffset nowUtc, int? errorRowNumber = null)
     {
         if (IsTerminal())
         {
@@ -341,6 +363,7 @@ public sealed class ImportJob
             throw new DomainException("invalid_failure", "Failure requires a code and a message.");
         }
 
+        var part = SinglePart();
         Status = ImportJobStatus.Failed;
         CompletedAt = nowUtc.ToUniversalTime();
         UpdatedAt = CompletedAt.Value;
@@ -350,7 +373,18 @@ public sealed class ImportJob
         LeaseOwner = null;
         LeaseUntil = null;
         NextAttemptAt = null;
+        if (retryable)
+        {
+            part.RecordError(errorCode.Trim(), errorRowNumber, nowUtc);
+        }
+        else
+        {
+            part.Fail(errorCode.Trim(), errorRowNumber, nowUtc);
+        }
     }
+
+    public void RecordPartError(string errorCode, int? errorRowNumber, DateTimeOffset nowUtc) =>
+        SinglePart().RecordError(errorCode, errorRowNumber, nowUtc);
 
     public void ScheduleRetry(DateTimeOffset nowUtc, DateTimeOffset nextAttemptAt)
     {
@@ -391,6 +425,28 @@ public sealed class ImportJob
         if (Status != ImportJobStatus.Processing)
         {
             throw new DomainException("job_not_processing", $"Job in status {Status} is not processing.");
+        }
+    }
+
+    private ImportPart SinglePart()
+    {
+        if (_parts.Count != 1)
+        {
+            throw new DomainException("invalid_job_part_state", "The legacy pipeline requires exactly one import part.");
+        }
+
+        _parts[0].ValidateFor(this);
+        return _parts[0];
+    }
+
+    private void EnsureCompatibleRules(Guid version, Guid document, string name, int number)
+    {
+        if ((RuleSetVersionId is not null && RuleSetVersionId != version) ||
+            (RuleDocumentId is not null && RuleDocumentId != document) ||
+            (RuleSetNameAtSubmission is not null && RuleSetNameAtSubmission != name) ||
+            (RuleVersionNumberAtSubmission is not null && RuleVersionNumberAtSubmission != number))
+        {
+            throw new DomainException("rule_reference_conflict", "Existing job rule references conflict with the migrated version.");
         }
     }
 

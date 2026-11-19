@@ -37,7 +37,11 @@ try
     logger.LogInformation("Backfill completed successfully: {Result}", result);
 
     // Verify integrity
-    var unmapped = await db.ImportJobs.CountAsync(j => j.RuleDocumentId == null || j.RuleSetVersionId == null);
+    var unmapped = await db.ImportJobs.CountAsync(j => j.Parts.Count == 1 &&
+        (j.RuleDocumentId == null || j.RuleSetVersionId == null || j.ExecutionFingerprint == null ||
+         j.RuleSetNameAtSubmission == null || j.RuleVersionNumberAtSubmission == null ||
+         j.Parts.Any(p => p.RuleDocumentId == null || p.RuleSetVersionId == null || p.RuleSnapshotHash == null ||
+             p.RuleSetNameAtSubmission == null || p.RuleVersionNumberAtSubmission == null)));
     if (unmapped > 0)
     {
         logger.LogWarning("{Count} jobs still unmapped after backfill", unmapped);

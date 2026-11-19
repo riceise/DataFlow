@@ -12,6 +12,7 @@ public sealed class DataFlowDbContext(DbContextOptions<DataFlowDbContext> option
 {
     public DbSet<DataSource> DataSources => Set<DataSource>();
     public DbSet<ImportJob> ImportJobs => Set<ImportJob>();
+    public DbSet<ImportPart> ImportParts => Set<ImportPart>();
     public DbSet<ImportRow> ImportRows => Set<ImportRow>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();

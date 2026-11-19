@@ -64,6 +64,7 @@ public sealed class RabbitMqStage6Tests(DataSourcesApiFixture postgres, RabbitMq
         await database.UploadRequests.ExecuteDeleteAsync();
         await database.OutboxMessages.ExecuteDeleteAsync();
         await database.ImportRows.ExecuteDeleteAsync();
+        await database.ImportParts.ExecuteDeleteAsync();
         await database.ImportJobs.ExecuteDeleteAsync();
         await database.Customers.ExecuteDeleteAsync();
         await database.DataSources.ExecuteDeleteAsync();

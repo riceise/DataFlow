@@ -31,6 +31,10 @@ public sealed class ImportJobTests
         Assert.Null(job.LeaseUntil);
         Assert.Null(job.NextAttemptAt);
         Assert.Equal(0, job.Retryable);
+        var part = Assert.Single(job.Parts);
+        Assert.Equal(ImportPartStatus.Cancelled, part.Status);
+        Assert.Equal(processedRows, part.ProcessedRows);
+        Assert.Equal(checkpoint, part.LastCommittedPhysicalRowNumber);
     }
 
     [Fact]
@@ -88,6 +92,11 @@ public sealed class ImportJobTests
         Assert.Equal(Now, job.CompletedAt);
         Assert.Null(job.LeaseOwner);
         Assert.Null(job.LeaseUntil);
+        var part = Assert.Single(job.Parts);
+        Assert.Equal(invalid > 0 ? ImportPartStatus.CompletedWithErrors : ImportPartStatus.Completed, part.Status);
+        Assert.Equal(job.ProcessedRows, part.ProcessedRows);
+        Assert.Equal(job.TotalRows, part.TotalRows);
+        Assert.Equal(job.LastCommittedRowNumber, part.LastCommittedPhysicalRowNumber);
     }
 
     [Fact]
@@ -138,6 +147,8 @@ public sealed class ImportJobTests
         Assert.Equal(12, job.ProcessedRows);
         Assert.Equal(job.ProcessedRows, job.InsertedRows + job.UpdatedRows + job.InvalidRows + job.DuplicateRows);
         Assert.Equal(15, job.LastCommittedRowNumber);
+        Assert.Equal(job.ProcessedRows, job.Parts[0].ProcessedRows);
+        Assert.Equal(job.LastCommittedRowNumber, job.Parts[0].LastCommittedPhysicalRowNumber);
 
         AssertCode("non_monotonic_row_number", () => job.RecordBatchCompletion(15, 1, 0, 0, 0, Now));
         AssertCode("invalid_row_counts", () => job.RecordBatchCompletion(16, -1, 0, 0, 0, Now));
@@ -194,6 +205,8 @@ public sealed class ImportJobTests
         Assert.Equal(ImportJobStatus.Processing, job.Status);
         Assert.Null(job.NextAttemptAt);
         Assert.Equal(checkpoint, job.LastCommittedRowNumber);
+        Assert.Equal(ImportPartStatus.Processing, job.Parts[0].Status);
+        Assert.Equal(checkpoint, job.Parts[0].LastCommittedPhysicalRowNumber);
     }
 
     [Fact]
@@ -211,6 +224,9 @@ public sealed class ImportJobTests
         Assert.Null(job.CompletedAt);
         Assert.Null(job.StartedAt);
         Assert.Null(job.NextAttemptAt);
+        Assert.Equal(ImportPartStatus.Processing, job.Parts[0].Status);
+        Assert.Equal(count, job.Parts[0].ProcessedRows);
+        Assert.Equal(checkpoint, job.Parts[0].LastCommittedPhysicalRowNumber);
         job.AcquireLease("worker", Now.AddMinutes(1), 60);
         Assert.Equal(ImportJobStatus.Processing, job.Status);
     }
@@ -233,8 +249,11 @@ public sealed class ImportJobTests
     public void PermanentFailure_CannotRetry()
     {
         var job = NewJob();
-        job.Fail("invalid_file", "Invalid file", false, Now);
+        job.Fail("invalid_file", "Invalid file", false, Now, 17);
         AssertCode("job_not_retryable", () => job.Retry(Now));
+        Assert.Equal(ImportPartStatus.Failed, job.Parts[0].Status);
+        Assert.Equal("invalid_file", job.Parts[0].LastErrorCode);
+        Assert.Equal(17, job.Parts[0].LastErrorRowNumber);
     }
 
     [Fact]
@@ -265,6 +284,37 @@ public sealed class ImportJobTests
         job.SetTotalRows(135, Now.AddSeconds(1));
         job.Complete(Now.AddSeconds(1));
         Assert.Equal(ImportJobStatus.CompletedWithErrors, job.Status);
+    }
+
+    [Theory]
+    [InlineData("customers.csv", ImportPartType.Csv, "file:single-file")]
+    [InlineData("customers.xlsx", ImportPartType.XlsxWorksheet, "xlsx:first-sheet")]
+    public void Create_AddsOnePendingPartWithLegacyProvenance(string fileName, ImportPartType type, string locator)
+    {
+        var job = ImportJob.Create(Guid.NewGuid(), fileName, "uploads/test", new string('a', 64), "{}", 1, Now);
+
+        var part = Assert.Single(job.Parts);
+        Assert.Equal(job.Id, part.ImportJobId);
+        Assert.Equal(0, part.PartIndex);
+        Assert.Equal(type, part.PartType);
+        Assert.Equal(fileName, part.SourceName);
+        Assert.Equal(locator, part.SourceLocator);
+        Assert.Equal(ImportPartStatus.Pending, part.Status);
+        Assert.Equal("customer:job", part.DeduplicationScope);
+        Assert.Equal(0, part.LastCommittedPhysicalRowNumber);
+        Assert.Null(part.TotalRows);
+        Assert.Null(part.RuleSetVersionId);
+        Assert.Null(part.RuleDocumentId);
+        Assert.Null(part.RuleSnapshotHash);
+    }
+
+    [Fact]
+    public void Create_TabularJobUsesPartScopedDeduplication()
+    {
+        var job = ImportJob.Create(Guid.NewGuid(), "rows.csv", "uploads/test", new string('a', 64), "{}", 1, Now,
+            DataSourceDataType.Tabular);
+
+        Assert.Equal("part:0", Assert.Single(job.Parts).DeduplicationScope);
     }
 
     [Fact]

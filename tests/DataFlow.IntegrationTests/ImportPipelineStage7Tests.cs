@@ -459,6 +459,43 @@ public sealed class ImportPipelineStage7Tests(DataSourcesApiFixture fixture) : I
         Assert.Equal(500, await database.Customers.CountAsync(x => x.DataSourceId == job.DataSourceId));
     }
 
+    [Fact]
+    public async Task Stage14_ManualRetryAfterExhaustionResumesSamePartWithNewRunVersion()
+    {
+        var job = await SeedAsync();
+        await using var database = fixture.CreateContext();
+        var store = new ImportJobStore(database);
+        var lease = (await store.AcquireAsync(job.Id, 1, "worker", 60, default, 4))!;
+        await store.CommitBatchAsync(lease, [BatchRow(job.DataSourceId, 2, "first")], 60, default);
+        await store.FinalizeAsync(lease, Guid.NewGuid(), null, "import_infrastructure_error", true, default, 4);
+        var exhausted = await database.ImportJobs.SingleAsync(j => j.Id == job.Id);
+        var partId = exhausted.Parts[0].Id;
+        Assert.Equal(ImportJobStatus.Failed, exhausted.Status);
+        Assert.Equal(1, exhausted.Retryable);
+        Assert.Equal(ImportPartStatus.Processing, exhausted.Parts[0].Status);
+        exhausted.Retry(DateTimeOffset.UtcNow);
+        await database.SaveChangesAsync();
+        database.ChangeTracker.Clear();
+
+        await CreateProcessor(database, new FileReader(() => new MemoryStream(Encoding.UTF8.GetBytes(
+            "externalId,name,email,registeredAt,isActive\nfirst,Customer 1,customer1@example.test,2026-01-01,true\nsecond,Customer 2,customer2@example.test,2026-01-01,true\n"))))
+            .ProcessAsync(job.Id, 2, Guid.NewGuid(), "manual", default);
+
+        database.ChangeTracker.Clear();
+        var resumed = await database.ImportJobs.AsNoTracking().SingleAsync(j => j.Id == job.Id);
+        var part = Assert.Single(resumed.Parts);
+        Assert.Equal(partId, part.Id);
+        Assert.Equal(2, resumed.RunVersion);
+        Assert.Equal(ImportJobStatus.Completed, resumed.Status);
+        Assert.Equal(ImportPartStatus.Completed, part.Status);
+        Assert.Equal(2, resumed.ProcessedRows);
+        Assert.Equal(2, part.ProcessedRows);
+        Assert.Equal(3, resumed.LastCommittedRowNumber);
+        Assert.Equal(3, part.LastCommittedPhysicalRowNumber);
+        Assert.Equal(2, await database.ImportRows.CountAsync(r => r.ImportPartId == partId));
+        Assert.Equal(2, await database.Customers.CountAsync(c => c.DataSourceId == job.DataSourceId));
+    }
+
     private async Task<ImportJob> SeedAsync(Guid? sourceId = null)
     {
         await using var database = fixture.CreateContext();

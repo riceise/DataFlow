@@ -70,6 +70,9 @@ public sealed class RecoveryStage8Tests(DataSourcesApiFixture fixture) : IClassF
         Assert.Equal(ImportJobStatus.Cancelled, cancelled.Status);
         Assert.Equal(250, cancelled.ProcessedRows);
         Assert.Equal(251, cancelled.LastCommittedRowNumber);
+        Assert.Equal(ImportPartStatus.Cancelled, cancelled.Parts[0].Status);
+        Assert.Equal(250, cancelled.Parts[0].ProcessedRows);
+        Assert.Equal(251, cancelled.Parts[0].LastCommittedPhysicalRowNumber);
     }
 
     [Theory]
@@ -87,6 +90,8 @@ public sealed class RecoveryStage8Tests(DataSourcesApiFixture fixture) : IClassF
         await store.FinalizeAsync(lease, messageId, null, "import_infrastructure_error", true, default, attempt);
         var current = await database.ImportJobs.AsNoTracking().SingleAsync(x => x.Id == job.Id);
         Assert.Equal(delay > 0 ? ImportJobStatus.RetryScheduled : ImportJobStatus.Failed, current.Status);
+        Assert.Equal(ImportPartStatus.Processing, current.Parts[0].Status);
+        Assert.Equal(delay > 0 ? "import_infrastructure_error" : "import_retry_exhausted", current.Parts[0].LastErrorCode);
         Assert.True(await database.ProcessedMessages.AnyAsync(x => x.MessageId == messageId.ToString()));
         var messages = await database.OutboxMessages.AsNoTracking().ToListAsync();
         var message = Assert.Single(messages, x => x.Type == (delay > 0 ? RabbitMqSession.RoutingKey : ImportRecoveryMessage.Dead)
@@ -175,6 +180,33 @@ public sealed class RecoveryStage8Tests(DataSourcesApiFixture fixture) : IClassF
         Assert.Equal(251, result.LastCommittedRowNumber);
         Assert.Equal(250, result.ProcessedRows);
         Assert.Equal(ImportJobStatus.Cancelled, result.Status);
+        Assert.Equal(ImportPartStatus.Cancelled, result.Parts[0].Status);
+        Assert.Equal(251, result.Parts[0].LastCommittedPhysicalRowNumber);
+    }
+
+    [Fact]
+    public async Task NonRetryableFailedJob_ReturnsConflictAndKeepsPartFailed()
+    {
+        var job = await SeedAsync();
+        await using (var database = fixture.CreateContext())
+        {
+            var current = await database.ImportJobs.SingleAsync(x => x.Id == job.Id);
+            current.Fail("invalid_csv", "Invalid CSV.", false, DateTimeOffset.UtcNow, 2);
+            await database.SaveChangesAsync();
+        }
+
+        using var client = fixture.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
+        using var response = await client.PostAsync($"/api/v1/import-jobs/{job.Id}/retry", null);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Contains("job_not_retryable", await response.Content.ReadAsStringAsync());
+        await using var observed = fixture.CreateContext();
+        var failed = await observed.ImportJobs.AsNoTracking().SingleAsync(x => x.Id == job.Id);
+        var part = Assert.Single(failed.Parts);
+        Assert.Equal(ImportJobStatus.Failed, failed.Status);
+        Assert.Equal(0, failed.Retryable);
+        Assert.Equal(ImportPartStatus.Failed, part.Status);
+        Assert.Equal("invalid_csv", part.LastErrorCode);
+        Assert.Equal(2, part.LastErrorRowNumber);
     }
 
     [Fact]

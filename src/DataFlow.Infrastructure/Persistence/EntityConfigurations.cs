@@ -54,9 +54,48 @@ internal sealed class ImportJobConfiguration : IEntityTypeConfiguration<ImportJo
         builder.HasOne<RuleSetVersion>().WithMany().HasForeignKey(j => new { j.RuleSetVersionId, j.RuleDocumentId })
             .HasPrincipalKey(v => new { v.Id, v.RuleDocumentId }).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<DataSource>().WithMany().HasForeignKey(job => job.DataSourceId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasMany(job => job.Parts).WithOne().HasForeignKey(part => part.ImportJobId).OnDelete(DeleteBehavior.Restrict);
+        builder.Navigation(job => job.Parts).UsePropertyAccessMode(PropertyAccessMode.Field).AutoInclude();
         builder.HasIndex(job => job.CreatedAt).IsDescending().HasDatabaseName("ix_import_jobs_created_at");
         builder.HasIndex(job => new { job.Status, job.CreatedAt }).IsDescending(false, true)
             .HasDatabaseName("ix_import_jobs_status_created_at");
+    }
+}
+
+internal sealed class ImportPartConfiguration : IEntityTypeConfiguration<ImportPart>
+{
+    public void Configure(EntityTypeBuilder<ImportPart> builder)
+    {
+        builder.ToTable("import_parts", table =>
+        {
+            table.HasCheckConstraint("ck_import_parts_identity", "part_index >= 0 AND part_type BETWEEN 1 AND 4 AND (sheet_index IS NULL OR sheet_index >= 0)");
+            table.HasCheckConstraint("ck_import_parts_status", "status BETWEEN 1 AND 7");
+            table.HasCheckConstraint("ck_import_parts_counters",
+                "processed_rows = valid_rows + inserted_rows + updated_rows + invalid_rows + duplicate_rows AND valid_rows >= 0 AND " +
+                "inserted_rows >= 0 AND updated_rows >= 0 AND invalid_rows >= 0 AND duplicate_rows >= 0 AND " +
+                "(total_rows IS NULL OR total_rows >= processed_rows) AND last_committed_physical_row_number >= 0");
+            table.HasCheckConstraint("ck_import_parts_rules",
+                "(rule_set_version_id IS NULL AND rule_document_id IS NULL AND rule_snapshot_hash IS NULL) OR " +
+                "(rule_set_version_id IS NOT NULL AND rule_document_id IS NOT NULL AND rule_snapshot_hash IS NOT NULL)");
+            table.HasCheckConstraint("ck_import_parts_deduplication_scope",
+                "(status = 7 AND deduplication_scope IS NULL) OR (status <> 7 AND deduplication_scope IS NOT NULL)");
+        });
+        builder.HasKey(part => part.Id);
+        builder.Property(part => part.Id).ValueGeneratedNever();
+        builder.HasAlternateKey(part => new { part.Id, part.ImportJobId }).HasName("ak_import_parts_id_import_job_id");
+        builder.HasIndex(part => new { part.ImportJobId, part.PartIndex }).IsUnique()
+            .HasDatabaseName("ux_import_parts_job_part_index");
+        builder.HasIndex(part => new { part.ImportJobId, part.DeduplicationScope, part.Id })
+            .HasDatabaseName("ix_import_parts_job_deduplication_scope");
+        builder.Property(part => part.SourceName).HasMaxLength(255).IsRequired();
+        builder.Property(part => part.SheetName).HasMaxLength(255);
+        builder.Property(part => part.SourceLocator).HasMaxLength(1024).IsRequired();
+        builder.Property(part => part.LastErrorCode).HasMaxLength(100);
+        builder.Property(part => part.RuleSnapshotHash).HasMaxLength(64);
+        builder.Property(part => part.RuleSetNameAtSubmission).HasMaxLength(200);
+        builder.Property(part => part.DeduplicationScope).HasMaxLength(100);
+        builder.HasOne<RuleSetVersion>().WithMany().HasForeignKey(part => new { part.RuleSetVersionId, part.RuleDocumentId })
+            .HasPrincipalKey(version => new { version.Id, version.RuleDocumentId }).OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -76,15 +115,17 @@ internal sealed class ImportRowConfiguration : IEntityTypeConfiguration<ImportRo
         builder.Property(row => row.Id).ValueGeneratedNever();
         builder.Property(row => row.RawData).HasColumnType("jsonb");
         builder.Property(row => row.ErrorsJson).HasColumnType("jsonb");
-        builder.Property(row => row.NaturalKey).HasMaxLength(256);
+        builder.Property(row => row.NaturalKey).HasMaxLength(256).UseCollation("C");
         builder.Property(row => row.RowHash).HasMaxLength(64);
-        builder.HasOne<ImportJob>().WithMany().HasForeignKey(row => row.ImportJobId).OnDelete(DeleteBehavior.Restrict);
-        builder.HasIndex(row => new { row.ImportJobId, row.RowNumber }).IsUnique()
-            .HasDatabaseName("ux_import_rows_job_row_number");
+        builder.HasOne<ImportPart>().WithMany().HasForeignKey(row => new { row.ImportPartId, row.ImportJobId })
+            .HasPrincipalKey(part => new { part.Id, part.ImportJobId }).OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_import_rows_import_part");
+        builder.HasIndex(row => new { row.ImportPartId, row.RowNumber }).IsUnique()
+            .HasDatabaseName("ux_import_rows_part_row_number");
         builder.HasIndex(row => new { row.ImportJobId, row.Status, row.RowNumber })
             .HasDatabaseName("ix_import_rows_job_status_row_number");
-        builder.HasIndex(row => new { row.ImportJobId, row.NaturalKey }).HasFilter("natural_key IS NOT NULL")
-            .HasDatabaseName("ix_import_rows_job_natural_key");
+        builder.HasIndex(row => new { row.ImportPartId, row.NaturalKey }).HasFilter("natural_key IS NOT NULL")
+            .HasDatabaseName("ix_import_rows_part_natural_key");
     }
 }
 
@@ -98,7 +139,7 @@ internal sealed class CustomerConfiguration : IEntityTypeConfiguration<Customer>
         builder.Property(customer => customer.ExternalId).HasMaxLength(80).IsRequired();
         builder.Property(customer => customer.Name).HasMaxLength(200).IsRequired();
         builder.Property(customer => customer.Email).HasMaxLength(254).IsRequired();
-        builder.Property(customer => customer.NaturalKey).HasMaxLength(256).IsRequired();
+        builder.Property(customer => customer.NaturalKey).HasMaxLength(256).UseCollation("C").IsRequired();
         builder.Property(customer => customer.RowHash).HasMaxLength(64).IsRequired();
         builder.Property(customer => customer.RegisteredAt).HasColumnType("date");
         builder.HasOne<DataSource>().WithMany().HasForeignKey(customer => customer.DataSourceId).OnDelete(DeleteBehavior.Restrict);
