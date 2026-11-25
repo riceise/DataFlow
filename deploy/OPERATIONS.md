@@ -31,6 +31,15 @@ multipart overhead; лимит приложения остаётся `Storage:Ma
 Ключи ASP.NET Data Protection сохраняются в `dataflow_api_keys`: cookie переживают
 пересоздание API. Тома с данными не зависят от жизненного цикла контейнера.
 
+Для Prepare/Commit дополнительно задайте в `.env` `PREPARED_UPLOAD_REPLAY_KEY` —
+случайные 32 байта в Base64 (например, `openssl rand -base64 32`). Это отдельный
+AES-256-GCM ключ, не Data Protection и не S3 credential. Compose использует key id
+`v1`; API проверяет конфигурацию при старте. Для ротации добавьте новый named key,
+переведите `PreparedUploadEncryption__ActiveKeyId` на него и сохраните прежний ключ
+для decrypt, пока живы ciphertext записей и их retention. Не удаляйте старый ключ
+сразу после переключения и не записывайте ключи в Git/logs. Development key в
+`appsettings.Development.json` предназначен только для локальных тестов.
+
 ```powershell
 docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.app.yml ps -a
 docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.app.yml logs --tail 100 api worker migrate storage-init
@@ -189,6 +198,15 @@ PostgreSQL advisory lock по object key, защищая длительный up
 Отсутствие записи компенсации после crash не мешает обнаружить orphan через S3 listing.
 Неуверенная ошибка БД приводит к пропуску удаления, а не к предположению об отсутствии job.
 Повторное удаление отсутствующего S3 объекта идемпотентно.
+
+`PreparedUpload` также является ссылкой на S3 object. Ready/unexpired объекты и
+активный Commit защищены object lock. После наступления `ExpiresAt` DB-driven
+cleanup сначала сохраняет recoverable cleanup-pending state и очищает replay/raw
+preview, затем идемпотентно удаляет S3 и фиксирует постоянный tombstone. Поэтому
+сбой между S3 и PostgreSQL не оставляет необнаруженный ciphertext, а внешне
+удалённый объект не мешает очистке. Consumed object подчиняется только Job
+retention, а не PreparedUpload TTL. Idempotency identity/token hash сохраняются;
+старый Prepare key после истечения не выдаёт новый token.
 
 Temp cleanup удаляет только случайные 64-hex файлы приложения старше grace period.
 API держит эксклюзивный `.lock` sidecar до окончания upload/dispatch/компенсации;

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DataFlow.Application.Imports;
 using DataFlow.Application.Rules;
 using DataFlow.Application.Validation;
 using DataFlow.Domain.Exceptions;
@@ -28,7 +29,26 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetails) :
                 code = validation.Code;
                 errors = validation.Errors;
                 break;
+            case ImportFileException file:
+                status = StatusCodes.Status400BadRequest;
+                code = file.Code;
+                break;
             case DomainException domain:
+                if (domain.Code is "prepared_upload_expired" or "upload_token_consumed" or
+                    "prepared_upload_integrity_mismatch" or "prepared_upload_object_missing")
+                {
+                    status = StatusCodes.Status409Conflict;
+                    code = domain.Code;
+                    break;
+                }
+                if (domain.Code is "invalid_upload_token" or "invalid_manifest" or "no_enabled_parts" or
+                    "invalid_deduplication_group" or "deduplication_group_not_allowed" or "unsupported_rule_engine" or
+                    "unsupported_rule_definition" or "invalid_rule_document")
+                {
+                    status = StatusCodes.Status400BadRequest;
+                    code = domain.Code;
+                    break;
+                }
                 if (domain.Code is "invalid_rule_definition" or "rule_version_not_found" or "revision_conflict" or
                     "rule_set_archived" or "rule_type_mismatch" or "share_recipient_not_found" or "source_inactive")
                 {

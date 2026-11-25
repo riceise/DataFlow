@@ -10,7 +10,7 @@ using Microsoft.Extensions.Options;
 
 namespace DataFlow.Infrastructure.Storage;
 
-public sealed class S3FileStorage(IAmazonS3 client, IOptions<StorageOptions> options, ILogger<S3FileStorage> logger) : IFileStorage, IImportFileReader
+public sealed class S3FileStorage(IAmazonS3 client, IOptions<StorageOptions> options, ILogger<S3FileStorage> logger) : IFileStorage, IImportFileReader, IPreparedFileStorage
 {
     public async Task<Stream> OpenReadAsync(string objectKey, CancellationToken cancellationToken)
     {
@@ -28,8 +28,54 @@ public sealed class S3FileStorage(IAmazonS3 client, IOptions<StorageOptions> opt
             InputStream = stream,
             // Bucket must be private. No public ACL is ever requested (also supports bucket-owner-enforced S3).
             ContentType = "application/octet-stream",
-            AutoCloseStream = false
+            AutoCloseStream = false,
+            IfNoneMatch = "*"
         }, cancellationToken);
+    }
+
+    async Task IPreparedFileStorage.UploadAsync(string objectKey, string filePath, string fileSha256,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, true);
+        var request = new PutObjectRequest
+        {
+            BucketName = options.Value.Bucket,
+            Key = objectKey,
+            InputStream = stream,
+            ContentType = "application/octet-stream",
+            AutoCloseStream = false,
+            IfNoneMatch = "*",
+            ChecksumAlgorithm = ChecksumAlgorithm.SHA256,
+            ChecksumSHA256 = Convert.ToBase64String(Convert.FromHexString(fileSha256))
+        };
+        request.Metadata.Add("sha256", fileSha256.ToLowerInvariant());
+        await client.PutObjectAsync(request, cancellationToken);
+    }
+
+    public async Task<PreparedStorageMetadata> HeadAsync(string objectKey, bool includeNativeChecksum,
+        CancellationToken cancellationToken)
+    {
+        var request = new GetObjectMetadataRequest
+        {
+            BucketName = options.Value.Bucket,
+            Key = objectKey
+        };
+        if (includeNativeChecksum)
+        {
+            request.ChecksumMode = ChecksumMode.ENABLED;
+        }
+
+        var response = await client.GetObjectMetadataAsync(request, cancellationToken);
+        string? metadata = null;
+        try { metadata = response.Metadata["x-amz-meta-sha256"]; }
+        catch (ArgumentException) { }
+        if (string.IsNullOrWhiteSpace(metadata))
+        {
+            try { metadata = response.Metadata["sha256"]; }
+            catch (ArgumentException) { }
+        }
+
+        return new(response.ContentLength, metadata, response.ChecksumSHA256);
     }
 
     public async Task DeleteAsync(string objectKey, CancellationToken cancellationToken) =>
@@ -72,6 +118,7 @@ public static class StorageExtensions
         });
         services.AddScoped<IFileStorage, S3FileStorage>();
         services.AddScoped<IImportFileReader, S3FileStorage>();
+        services.AddScoped<IPreparedFileStorage, S3FileStorage>();
         services.AddHostedService<OrphanCleanupService>();
         services.AddHostedService<StorageMaintenanceService>();
         return services;

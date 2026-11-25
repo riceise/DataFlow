@@ -1,5 +1,6 @@
 using Amazon.S3;
 using Amazon.S3.Model;
+using DataFlow.Domain.Entities;
 using DataFlow.Domain.Enums;
 using DataFlow.Infrastructure.Configuration;
 using DataFlow.Infrastructure.Observability;
@@ -27,6 +28,7 @@ public sealed class StorageMaintenanceService(IServiceScopeFactory scopes, IOpti
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 timeout.CancelAfter(TimeSpan.FromSeconds(60));
                 CleanupTemporaryFiles();
+                await CleanupPreparedUploadsAsync(timeout.Token);
                 await CleanupObjectsAsync(timeout.Token);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
@@ -72,6 +74,64 @@ public sealed class StorageMaintenanceService(IServiceScopeFactory scopes, IOpti
         return count;
     }
 
+    public async Task CleanupPreparedUploadsAsync(CancellationToken ct)
+    {
+        using var scope = scopes.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<DataFlowDbContext>();
+        var s3 = scope.ServiceProvider.GetRequiredService<IAmazonS3>();
+        var settings = options.Value;
+        var expiryCutoff = UtcNow;
+        var candidates = await db.PreparedUploads.AsNoTracking().Where(upload => upload.StorageKey != null &&
+                (upload.Status == PreparedUploadStatus.Aborted ||
+                 upload.Status == PreparedUploadStatus.Ready && upload.ExpiresAt <= expiryCutoff))
+            .OrderBy(upload => upload.ExpiresAt).Take(settings.CleanupBatchSize)
+            .Select(upload => new { upload.Id, upload.StorageKey }).ToArrayAsync(ct);
+        foreach (var candidate in candidates)
+        {
+            if (candidate.StorageKey is not { } key)
+            {
+                continue;
+            }
+
+            await using var objectLock = await StorageObjectLock.AcquireAsync(db.Database.GetConnectionString()!, key, false, ct);
+            if (objectLock is null)
+            {
+                continue;
+            }
+
+            await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+            {
+                var upload = await db.PreparedUploads.FromSqlInterpolated(
+                    $"SELECT * FROM prepared_uploads WHERE id = {candidate.Id} FOR UPDATE").SingleAsync(ct);
+                if (upload.Status == PreparedUploadStatus.Ready && upload.ExpiresAt <= expiryCutoff &&
+                    upload.StorageKey == key)
+                {
+                    upload.BeginExpiryCleanup();
+                    await db.SaveChangesAsync(ct);
+                }
+
+                await transaction.CommitAsync(ct);
+            }
+
+            await s3.DeleteObjectAsync(settings.Bucket, key, ct);
+            db.ChangeTracker.Clear();
+            await using (var transaction = await db.Database.BeginTransactionAsync(ct))
+            {
+                var upload = await db.PreparedUploads.FromSqlInterpolated(
+                    $"SELECT * FROM prepared_uploads WHERE id = {candidate.Id} FOR UPDATE").SingleAsync(ct);
+                if (upload.Status == PreparedUploadStatus.Aborted && upload.StorageKey == key)
+                {
+                    upload.ExpireAndClearSensitiveData();
+                    await db.SaveChangesAsync(ct);
+                }
+
+                await transaction.CommitAsync(ct);
+            }
+
+            DataFlowTelemetry.Deleted.Add(1, new KeyValuePair<string, object?>("kind", "prepared_upload"));
+        }
+    }
+
     public async Task CleanupObjectsAsync(CancellationToken ct)
     {
         using var scope = scopes.CreateScope();
@@ -98,14 +158,20 @@ public sealed class StorageMaintenanceService(IServiceScopeFactory scopes, IOpti
             if (objectLock is null) { continue; }
             await using var transaction = await db.Database.BeginTransactionAsync(ct);
             var jobs = await db.ImportJobs.FromSqlInterpolated($"SELECT * FROM import_jobs WHERE storage_key = {item.Key} FOR UPDATE").ToListAsync(ct);
+            var prepared = await db.PreparedUploads.FromSqlInterpolated(
+                $"SELECT * FROM prepared_uploads WHERE storage_key = {item.Key} FOR UPDATE").ToListAsync(ct);
             var cutoff = UtcNow.AddDays(-settings.CompletedFileRetentionDays);
-            if (jobs.Count > 0 && (settings.CompletedFileRetentionDays == 0 || jobs.Any(j =>
+            // Unconsumed Prepared objects are handled by the recoverable DB-driven expiry path.
+            // Consumed objects deliberately follow only the Job retention predicate below.
+            var protectedPrepared = prepared.Any(upload => upload.Status != PreparedUploadStatus.Consumed);
+            if (protectedPrepared || jobs.Count > 0 && (settings.CompletedFileRetentionDays == 0 || jobs.Any(j =>
                     !j.IsTerminal() || j.Status == ImportJobStatus.Failed && j.Retryable != 0 || j.CompletedAt is null || j.CompletedAt >= cutoff)))
             {
                 await transaction.CommitAsync(ct);
                 continue;
             }
             await s3.DeleteObjectAsync(settings.Bucket, item.Key, ct);
+            await db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
             DataFlowTelemetry.Deleted.Add(1, new KeyValuePair<string, object?>("kind", jobs.Count == 0 ? "orphan" : "retained_source"));
             logger.LogInformation("Storage cleanup removed object; reason {Reason}", jobs.Count == 0 ? "orphan" : "retention");

@@ -50,7 +50,8 @@ internal sealed record XlsxCellSpec(
 
 internal sealed record XlsxRowSpec(int? RowNumber, IReadOnlyList<XlsxCellSpec> Cells);
 
-internal sealed record XlsxSheetSpec(string Name, IReadOnlyList<XlsxRowSpec> Rows, string? EntryPath = null);
+internal sealed record XlsxSheetSpec(string Name, IReadOnlyList<XlsxRowSpec> Rows, string? EntryPath = null,
+    string? Visibility = null);
 
 internal static class XlsxTestBuilder
 {
@@ -118,6 +119,11 @@ internal static class XlsxTestBuilder
                 {
                     writer.WriteStartElement("sheet");
                     writer.WriteAttributeString("name", sheets[i].Name);
+                    if (sheets[i].Visibility is not null)
+                    {
+                        writer.WriteAttributeString("state", sheets[i].Visibility);
+                    }
+
                     writer.WriteAttributeString("sheetId", (i + 1).ToString(CultureInfo.InvariantCulture));
                     writer.WriteAttributeString("r", "id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships", $"rId{i + 1}");
                     writer.WriteEndElement();

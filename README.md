@@ -267,6 +267,71 @@ CRLF, LF и CR поддерживаются. Завершающий перево
 Эквивалентные CSV и XLSX дают одинаковые `NaturalKey`, `RowHash`, статусы строк
 и ошибки — это закреплено интеграционными тестами этапа 9.
 
+### Двухфазная загрузка Prepare / Commit (этап 15)
+
+Новый путь для CSV, XLSX и ZIP с CSV в корне:
+
+```text
+POST /api/v1/data-sources/{id}/file-uploads/prepare   (multipart + Idempotency-Key)
+POST /api/v1/data-sources/{id}/file-uploads/inspect   {uploadToken, partIndex, ruleSetVersionId}
+POST /api/v1/data-sources/{id}/file-uploads/commit    (Idempotency-Key)
+```
+
+Prepare сохраняет объект в приватный S3, читает структуру и ограниченный preview,
+возвращает `uploadToken`, `expiresAt` и неизменяемые серверные `partIndex`. XLSX
+сохраняет workbook order и resolved relationship locator, ZIP — порядок CSV entries
+в central directory. Ответ не содержит `StorageKey`. Один лист представляет одну
+таблицу с заголовками в первой строке; regions вроде A1:D5/K1:P8 не распознаются.
+Повтор Prepare с тем же ключом/fingerprint возвращает исходный зашифрованный
+response и тот же token без нового S3 object; другой fingerprint — `409`.
+Plaintext token в БД нет: сохраняются SHA-256 token и AES-256-GCM replay response.
+TTL задаётся `Import:PreparedUploadTtlSeconds` (1800 секунд, диапазон 300–86400).
+После TTL/очистки остаётся постоянный idempotency tombstone; старый ключ не
+воскрешает upload.
+
+Commit принимает ровно исходный порядок всех частей:
+
+```json
+{
+  "uploadToken": "...",
+  "parts": [
+    {"partIndex": 0, "enabled": true, "ruleSetVersionId": "guid"},
+    {"partIndex": 1, "enabled": false, "ruleSetVersionId": null, "deduplicationGroup": null}
+  ]
+}
+```
+
+Для каждой включённой части версия выбирается явно; Customer и Tabular можно
+смешивать. Customer scope — `customer:job`, Tabular по умолчанию — `part:{index}`,
+explicit group нормализуется в `tabular-group:{trimmed-ascii-lowercase}`.
+Заголовки проверяются из persisted manifest без S3 GET. CSV inspect повторно
+разбирает сохранённые raw records с delimiter выбранных правил. Одна транзакция
+создаёт один Job, все Part, UploadRequest, consumed state и один outbox. Повтор
+Commit выполняется до HEAD/GET и не использует legacy fingerprint alias. Старый
+`/files` и его v2 semantics не изменены.
+
+`Import:PreparedUploadIntegrity` поддерживает `Metadata` (HEAD + ContentLength +
+`sha256` metadata), `Native` (S3 SHA-256 checksum) и `Strict` (полный streaming
+GET + SHA-256). ETag не используется. Приватный S3 и administrative credentials —
+trusted infrastructure для Metadata; Strict нужен при угрозе записи в bucket в
+обход приложения. Приложение отправляет `If-None-Match: *` при PUT.
+
+Rule-backed источник получает ZIP только явно: `allowZipCsv=true` при
+`POST /rule-sources` либо `PUT /api/v1/rule-sources/{id}/zip-csv` с
+`{"enabled":true}`. Это не меняет форматы существующих источников.
+
+Основные новые лимиты: `Import:MaxPartsPerJob=50`, `MaxSheetsPerWorkbook=50`,
+`MaxCsvFilesPerArchive=50`, `PreviewRows=20` (не более 200 raw preview records на
+Job), `MaxPreviewRawBytesPerPart=1 MiB`, `MaxPreviewRawBytesPerJob=8 MiB`, независимые
+`Import:Xlsx:MaxSharedStrings/MaxSharedStringChars` и `Import:Zip:*` (entries,
+archive/entry/total bytes, filename length). ZIP принимает только незашифрованные
+CSV в корне; raw central/local headers, encryption flags, ZIP64/data descriptors,
+NFC/case duplicates и declared/actual sizes проверяются до обработки.
+
+Последовательная обработка нескольких частей Worker относится к этапу 16, выбранные
+worksheet/ZIP entry — к этапам 17–18. Поэтому Stage 15 создаёт корректно
+сконфигурированный Job, но не объявляет multi-part runtime завершённым.
+
 ### CSV-отчёт ошибок и Dashboard
 
 `GET /api/v1/import-jobs/{id}/errors.csv` отдаёт потоковый отчёт по невалидным

@@ -13,6 +13,8 @@ x-app-environment: &app-environment
   Storage__Bucket: ${STORAGE_BUCKET:-dataflow-imports}
   Storage__TempDirectory: /data/uploads
   Storage__CompletedFileRetentionDays: ${COMPLETED_FILE_RETENTION_DAYS:-0}
+  PreparedUploadEncryption__ActiveKeyId: v1
+  PreparedUploadEncryption__Keys__v1: ${PREPARED_UPLOAD_REPLAY_KEY:?Set PREPARED_UPLOAD_REPLAY_KEY to a Base64-encoded 32-byte key in .env}
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel:4317
   OTEL_EXPORTER_OTLP_PROTOCOL: grpc
   OTEL_METRIC_EXPORT_INTERVAL: 15000

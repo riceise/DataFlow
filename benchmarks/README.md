@@ -78,3 +78,35 @@ dotnet run --project tools/DataFlow.Benchmark -- [--runs 10] [--rows 1000] [--sk
 Полные машинные результаты пишутся в `benchmarks/results-<timestamp>.json`
 (в Git не включаются, см. `.gitignore`), логи процессов API/Worker — в
 `benchmarks/logs/`. Требуется Docker Desktop с Linux engine.
+
+## Prepare / Commit и S3 integrity — 2026-11-25 (этап 15)
+
+Отдельный прогон `--prepare --runs 1` на реальных PostgreSQL/RabbitMQ/MinIO и API
+(Production, Debug binary). CSV/ZIP содержали около 50 МиБ фактических данных,
+XLSX — около 25 МиБ при текущих effective caps; повышение лимитов не применялось.
+Это замер стоимости одного холодного прогона, а не p95 и не throughput gate.
+
+| Формат | Байты | Prepare, мс | Prepare replay, мс | HEAD Commit, мс | Commit replay, мс |
+|---|---:|---:|---:|---:|---:|
+| CSV | 52 363 264 | 2223,1 | 168,8 | 318,1 | 80,1 |
+| ZIP CSV | 52 359 284 | 2044,8 | 98,5 | 42,8 | 15,3 |
+| XLSX | 26 198 227 | 345,3 | 62,4 | 27,1 | 7,4 |
+
+| Формат | Metadata HEAD, мс | Native SHA-256 HEAD, мс | Strict GET+SHA-256, мс | Strict S3 bytes |
+|---|---:|---:|---:|---:|
+| CSV | 17,5 | 5,3 | 719,5 | 52 363 264 |
+| ZIP CSV | 2,0 | 1,5 | 303,6 | 52 359 284 |
+| XLSX | 2,1 | 1,7 | 146,2 | 26 198 227 |
+
+HEAD/native не читали содержимое (0 байт); Strict прочитал объект ровно один раз.
+Replay Prepare повторно принимает multipart/считает локальный hash, но не создаёт
+S3 effects; replay Commit не выполняет HEAD/GET. Native round-trip и запрет
+overwrite через `If-None-Match: *` также проверены на закреплённом MinIO digest.
+
+Воспроизведение:
+
+```powershell
+dotnet run --project tools/DataFlow.Benchmark -- --prepare [--runs 3]
+```
+
+Машинный отчёт — `benchmarks/results-prepared-<timestamp>.json` (вне Git).

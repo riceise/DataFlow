@@ -62,6 +62,43 @@ public sealed class ImportPart
 
     internal static ImportPart CreateSingle(ImportJob job, DateTimeOffset nowUtc, DataSourceDataType dataType) => new(job, nowUtc, dataType);
 
+    internal static ImportPart CreatePrepared(ImportJob job, int partIndex, ImportPartType partType, string sourceName,
+        string? sheetName, int? sheetIndex, string sourceLocator, bool enabled, string? deduplicationScope, DateTimeOffset nowUtc)
+    {
+        if (partIndex < 0 || string.IsNullOrWhiteSpace(sourceName) || string.IsNullOrWhiteSpace(sourceLocator) ||
+            partType == ImportPartType.Other || (enabled && string.IsNullOrWhiteSpace(deduplicationScope)) ||
+            (!enabled && deduplicationScope is not null))
+        {
+            throw new DomainException("invalid_import_part", "Prepared import part data is invalid.");
+        }
+
+        return new ImportPart
+        {
+            Id = Guid.NewGuid(),
+            ImportJobId = job.Id,
+            PartIndex = partIndex,
+            PartType = partType,
+            SourceName = sourceName,
+            SheetName = sheetName,
+            SheetIndex = sheetIndex,
+            SourceLocator = sourceLocator,
+            Status = enabled ? ImportPartStatus.Pending : ImportPartStatus.Skipped,
+            DeduplicationScope = deduplicationScope,
+            CreatedAt = nowUtc.ToUniversalTime(),
+            UpdatedAt = nowUtc.ToUniversalTime()
+        };
+    }
+
+    internal void PinPreparedRules(Guid version, Guid document, string snapshotHash, string name, int number)
+    {
+        if (Status != ImportPartStatus.Pending)
+        {
+            throw new DomainException("invalid_part_rules", "Skipped parts cannot have rules.");
+        }
+
+        PinRules(version, document, snapshotHash, name, number, DataSourceDataType.Tabular, migration: false);
+    }
+
     internal void Start(DateTimeOffset nowUtc)
     {
         if (Status == ImportPartStatus.Pending)
@@ -96,7 +133,7 @@ public sealed class ImportPart
         RuleSnapshotHash ??= snapshotHash;
         RuleSetNameAtSubmission ??= name;
         RuleVersionNumberAtSubmission ??= number;
-        DeduplicationScope = dataType == DataSourceDataType.Customer ? "customer:job" : $"part:{PartIndex}";
+        DeduplicationScope ??= dataType == DataSourceDataType.Customer ? "customer:job" : $"part:{PartIndex}";
     }
 
     internal void MigrateRules(Guid version, Guid document, string snapshotHash, string name, int number,

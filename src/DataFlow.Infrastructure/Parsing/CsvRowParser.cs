@@ -51,7 +51,7 @@ public sealed class CsvRowParser(IOptions<ImportProcessingOptions> options) : IC
         var header = await ReadRecordAsync(csv, reader, limits, cancellationToken)
             ?? throw new ImportFileException("empty_file", "A CSV header is required.", 1);
         var headers = Array.ConvertAll(header.Cells, static cell => cell.Trim());
-        ValidateHeader(headers, schema);
+        TabularHeaders.Validate(headers, schema, "CSV");
         var dataRows = 0;
 
         while (await ReadRecordAsync(csv, reader, limits, cancellationToken) is { } record)

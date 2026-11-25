@@ -5,11 +5,14 @@ using DataFlow.Application;
 using DataFlow.Application.Abstractions;
 using DataFlow.Application.Dispatching;
 using DataFlow.Application.Jobs;
+using DataFlow.Application.Uploads;
 using DataFlow.Infrastructure.Configuration;
 using DataFlow.Infrastructure.Imports;
 using DataFlow.Infrastructure.Observability;
+using DataFlow.Infrastructure.Parsing;
 using DataFlow.Infrastructure.Persistence;
 using DataFlow.Infrastructure.Storage;
+using DataFlow.Infrastructure.Uploads;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
@@ -32,6 +35,11 @@ builder.Host.UseSerilog((context, services, loggerConfiguration) =>
 builder.Services.AddDataFlowConfiguration(builder.Configuration);
 builder.Services.AddDataFlowPersistence();
 builder.Services.AddDataFlowStorage();
+builder.Services.AddOptions<PreparedUploadEncryptionOptions>()
+    .Bind(builder.Configuration.GetSection(PreparedUploadEncryptionOptions.SectionName))
+    .Validate(PreparedUploadReplayCrypto.IsConfigurationValid,
+        "PreparedUploadEncryption requires an active key id and named Base64 keys of exactly 32 bytes; key ids are limited to 100 characters.")
+    .ValidateOnStart();
 builder.Services.AddDataFlowObservability(builder.Configuration, "DataFlow.Api");
 var protection = builder.Services.AddDataProtection().SetApplicationName("DataFlow");
 if (builder.Configuration["DataProtection:KeysPath"] is { Length: > 0 } keysPath)
@@ -44,6 +52,16 @@ builder.Services.AddScoped<JobControlHandler>();
 builder.Services.AddScoped<IRequestHandler<RetryJobCommand, JobAcceptedDto>>(p => p.GetRequiredService<JobControlHandler>());
 builder.Services.AddScoped<IRequestHandler<CancelJobCommand, JobAcceptedDto>>(p => p.GetRequiredService<JobControlHandler>());
 builder.Services.AddScoped<IRequestHandler<UploadFileCommand, JobAcceptedDto>, UploadFileHandler>();
+builder.Services.AddScoped<CsvUploadInspector>();
+builder.Services.AddScoped<XlsxUploadInspector>();
+builder.Services.AddScoped<ZipCsvUploadInspector>();
+builder.Services.AddScoped<UploadManifestInspector>();
+builder.Services.AddScoped<UploadRuleResolver>();
+builder.Services.AddScoped<PreparedUploadReplayCrypto>();
+builder.Services.AddScoped<PreparedUploadIntegrityVerifier>();
+builder.Services.AddScoped<IRequestHandler<PrepareUploadCommand, PreparedUploadResponse>, PrepareUploadHandler>();
+builder.Services.AddScoped<IRequestHandler<InspectPreparedPartCommand, PreparedPartDto>, InspectPreparedPartHandler>();
+builder.Services.AddScoped<IRequestHandler<CommitPreparedUploadCommand, JobAcceptedDto>, CommitPreparedUploadHandler>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();

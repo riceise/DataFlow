@@ -35,4 +35,62 @@ public sealed class ImportProcessingOptions
 
     [Range(60, 1200)]
     public int DeadlineSeconds { get; init; } = 1200;
+
+    [Range(1, 200)]
+    public int MaxPartsPerJob { get; init; } = 50;
+
+    [Range(1, 200)]
+    public int MaxSheetsPerWorkbook { get; init; } = 50;
+
+    [Range(1, 200)]
+    public int MaxCsvFilesPerArchive { get; init; } = 50;
+
+    [Range(1, 100)]
+    public int PreviewRows { get; init; } = 20;
+
+    [Range(300, 86400)]
+    public int PreparedUploadTtlSeconds { get; init; } = 1800;
+
+    [Range(1024, 1048576)]
+    public int MaxPreviewRawBytesPerPart { get; init; } = 1048576;
+
+    [Range(1024, 8388608)]
+    public int MaxPreviewRawBytesPerJob { get; init; } = 8388608;
+
+    public PreparedUploadIntegrityMode PreparedUploadIntegrity { get; init; } = PreparedUploadIntegrityMode.Metadata;
+
+    public ZipContainerOptions Zip { get; init; } = new();
+
+    public XlsxContainerOptions Xlsx { get; init; } = new();
+}
+
+public enum PreparedUploadIntegrityMode
+{
+    Metadata = 1,
+    Native = 2,
+    Strict = 3
+}
+
+public sealed class ZipContainerOptions
+{
+    [Range(1, 10000)]
+    public int MaxEntries { get; init; } = 128;
+    [Range(1, 200)]
+    public int MaxCsvFiles { get; init; } = 50;
+    [Range(1024, 104857600)]
+    public long MaxArchiveBytes { get; init; } = 50 * 1024 * 1024;
+    [Range(1024, 104857600)]
+    public long MaxEntryBytes { get; init; } = 50 * 1024 * 1024;
+    [Range(1024, 536870912)]
+    public long MaxTotalUncompressedBytes { get; init; } = 100 * 1024 * 1024;
+    [Range(1, 1024)]
+    public int MaxFileNameLength { get; init; } = 255;
+}
+
+public sealed class XlsxContainerOptions
+{
+    [Range(0, 2000000)]
+    public int MaxSharedStrings { get; init; } = 250000;
+    [Range(0, 67108864)]
+    public int MaxSharedStringChars { get; init; } = 8388608;
 }

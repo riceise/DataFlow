@@ -3,13 +3,19 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using DataFlow.Domain.Entities;
+using DataFlow.Domain.Enums;
+using DataFlow.Infrastructure.Configuration;
 using DataFlow.Infrastructure.Persistence;
+using DataFlow.Infrastructure.Storage;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using Testcontainers.PostgreSql;
 using Testcontainers.RabbitMq;
 
@@ -100,6 +106,8 @@ public static class Program
             // The 25 MB memory fixture exceeds the 50 000 default; the budget in
             // the architecture allows up to 500 000 data rows.
             ["Import__MaxRows"] = "500000",
+            ["PreparedUploadEncryption__ActiveKeyId"] = "v1",
+            ["PreparedUploadEncryption__Keys__v1"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
         };
 
         var apiPort = FreePort();
@@ -116,6 +124,11 @@ public static class Program
             using var session = new ApiSession(apiPort);
             var user = await session.RegisterAsync();
             Console.WriteLine($"Authenticated as {user}.");
+            if (options.PreparedOnly)
+            {
+                await StopAsync(worker);
+                return await RunPreparedBenchmarkAsync(session, minio, bucket, root, options);
+            }
 
             var sourceId = await session.CreateSourceAsync();
             var seedBytes = Encoding.UTF8.GetBytes(SeedCsv());
@@ -159,6 +172,207 @@ public static class Program
             await samplerTask.WaitAsync(TimeSpan.FromSeconds(3));
         }
     }
+
+    private static async Task<int> RunPreparedBenchmarkAsync(ApiSession session, IContainer minio, string bucket,
+        string root, Options options)
+    {
+        var source = await session.CreatePreparedSourceAsync();
+        var fixtures = new[]
+        {
+            new PreparedFixture("Csv", "large.csv", LargeCsv(50 * 1024 * 1024 - 65_536)),
+            new PreparedFixture("ZipCsv", "large.zip", LargeZip(50 * 1024 * 1024 - 65_536)),
+            new PreparedFixture("Xlsx", "large.xlsx", LargeXlsx(25 * 1024 * 1024 - 16_384))
+        };
+        var runs = new List<object>();
+        foreach (var fixture in fixtures)
+        {
+            for (var index = 1; index <= options.Runs; index++)
+            {
+                var timer = Stopwatch.StartNew();
+                var prepared = await session.PrepareAsync(source.SourceId, fixture.Bytes, fixture.FileName,
+                    $"prepare-{fixture.Format}-{index}");
+                timer.Stop();
+                var prepareMs = timer.Elapsed.TotalMilliseconds;
+                timer.Restart();
+                _ = await session.PrepareAsync(source.SourceId, fixture.Bytes, fixture.FileName,
+                    $"prepare-{fixture.Format}-{index}");
+                timer.Stop();
+                var prepareReplayMs = timer.Elapsed.TotalMilliseconds;
+                timer.Restart();
+                _ = await session.CommitPreparedAsync(source.SourceId, source.VersionId, prepared.Token,
+                    $"commit-{fixture.Format}-{index}");
+                timer.Stop();
+                var commitMs = timer.Elapsed.TotalMilliseconds;
+                timer.Restart();
+                _ = await session.CommitPreparedAsync(source.SourceId, source.VersionId, prepared.Token,
+                    $"commit-{fixture.Format}-{index}");
+                timer.Stop();
+                var commitReplayMs = timer.Elapsed.TotalMilliseconds;
+                runs.Add(new
+                {
+                    format = fixture.Format,
+                    bytes = fixture.Bytes.LongLength,
+                    run = index,
+                    prepareMs,
+                    prepareReplayMs,
+                    commitMs,
+                    commitReplayMs,
+                    commitS3BytesRead = 0
+                });
+                Console.WriteLine($"{fixture.Format} run {index}: Prepare {prepareMs:F1} ms (replay {prepareReplayMs:F1}), " +
+                    $"HEAD Commit {commitMs:F1} ms (replay {commitReplayMs:F1} ms)");
+            }
+
+            await MeasureIntegrityModesAsync(minio, bucket, fixture, runs);
+        }
+
+        var stamp = DateTime.Now.ToString("yyyy-MM-dd-HHmm", CultureInfo.InvariantCulture);
+        var reportPath = Path.Combine(root, "benchmarks", $"results-prepared-{stamp}.json");
+        await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new
+        {
+            stage = 15,
+            timestamp = DateTimeOffset.UtcNow,
+            machine = Environment.MachineName,
+            runtime = Environment.Version.ToString(),
+            runs
+        }, Report.JsonOptions));
+        Console.WriteLine($"Prepared report: {reportPath}");
+        return 0;
+    }
+
+    private static async Task MeasureIntegrityModesAsync(IContainer minio, string bucket, PreparedFixture fixture,
+        List<object> runs)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"prepared-benchmark-{Guid.NewGuid():N}");
+        await File.WriteAllBytesAsync(path, fixture.Bytes);
+        var endpoint = $"http://{minio.Hostname}:{minio.GetMappedPublicPort(9000)}";
+        using var client = new Amazon.S3.AmazonS3Client("dataflow_bench", "benchmark_password", new Amazon.S3.AmazonS3Config
+        {
+            ServiceURL = endpoint,
+            ForcePathStyle = true,
+            AuthenticationRegion = "us-east-1"
+        });
+        var storage = new S3FileStorage(client, Microsoft.Extensions.Options.Options.Create(new StorageOptions
+        {
+            Endpoint = endpoint,
+            Bucket = bucket,
+            AccessKey = "dataflow_bench",
+            SecretKey = "benchmark_password",
+            Region = "us-east-1"
+        }), NullLogger<S3FileStorage>.Instance);
+        var key = $"sources/{Guid.NewGuid():N}/2026/11/25/{Guid.NewGuid():N}";
+        var hash = Convert.ToHexStringLower(SHA256.HashData(fixture.Bytes));
+        try
+        {
+            await ((Application.Abstractions.IPreparedFileStorage)storage).UploadAsync(key, path, hash, CancellationToken.None);
+            var prepared = PreparedUpload.CreateReady(Guid.NewGuid(), Guid.NewGuid(), "benchmark", new string('a', 64), key,
+                fixture.FileName, hash, fixture.Format == "Csv" ? AcceptedFileFormat.Csv :
+                fixture.Format == "Xlsx" ? AcceptedFileFormat.Xlsx : AcceptedFileFormat.Zip,
+                fixture.Bytes.LongLength, new string('b', 64), [1], "v1", "{}", DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddMinutes(30));
+            foreach (var mode in Enum.GetValues<PreparedUploadIntegrityMode>())
+            {
+                var verifier = new PreparedUploadIntegrityVerifier(storage,
+                    Microsoft.Extensions.Options.Options.Create(new ImportProcessingOptions { PreparedUploadIntegrity = mode }));
+                var timer = Stopwatch.StartNew();
+                await verifier.VerifyAsync(prepared, CancellationToken.None);
+                timer.Stop();
+                runs.Add(new
+                {
+                    format = fixture.Format,
+                    integrity = mode.ToString(),
+                    bytes = fixture.Bytes.LongLength,
+                    verifyMs = timer.Elapsed.TotalMilliseconds,
+                    s3BytesRead = mode == PreparedUploadIntegrityMode.Strict ? fixture.Bytes.LongLength : 0,
+                    operation = mode == PreparedUploadIntegrityMode.Strict ? "GET+SHA256" : "HEAD"
+                });
+                Console.WriteLine($"{fixture.Format} {mode}: {timer.Elapsed.TotalMilliseconds:F1} ms, " +
+                    $"S3 read {(mode == PreparedUploadIntegrityMode.Strict ? fixture.Bytes.LongLength : 0)} bytes");
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+            await client.DeleteObjectAsync(bucket, key);
+        }
+    }
+
+    private static byte[] LargeCsv(int targetBytes)
+    {
+        var builder = new StringBuilder("code\n", targetBytes);
+        var random = new Random(15);
+        const string alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+        var index = 0;
+        var byteCount = Encoding.UTF8.GetByteCount("code\n");
+        while (byteCount < targetBytes && index < 499_000)
+        {
+            var value = new string(Enumerable.Range(0, 110).Select(_ => alphabet[random.Next(alphabet.Length)]).ToArray());
+            var line = $"row-{index++}-{value}\n";
+            builder.Append(line);
+            byteCount += Encoding.UTF8.GetByteCount(line);
+        }
+
+        if (index >= 499_000 && byteCount < targetBytes)
+        {
+            throw new InvalidOperationException("CSV fixture exceeds its row budget.");
+        }
+
+        var bytes = Encoding.UTF8.GetBytes(builder.ToString());
+        return bytes.Length > targetBytes ? bytes[..targetBytes] : bytes;
+    }
+
+    private static byte[] LargeZip(int targetBytes)
+    {
+        var csv = LargeCsv(targetBytes - 4096);
+        using var memory = new MemoryStream();
+        using (var archive = new System.IO.Compression.ZipArchive(memory, System.IO.Compression.ZipArchiveMode.Create, true))
+        {
+            var entry = archive.CreateEntry("large.csv", System.IO.Compression.CompressionLevel.NoCompression);
+            using var stream = entry.Open();
+            stream.Write(csv);
+        }
+
+        if (memory.Length > targetBytes)
+        {
+            throw new InvalidOperationException("ZIP fixture exceeds its compressed byte budget.");
+        }
+
+        return memory.ToArray();
+    }
+
+    private static byte[] LargeXlsx(int targetBytes)
+    {
+        using var memory = new MemoryStream();
+        using (var archive = new System.IO.Compression.ZipArchive(memory, System.IO.Compression.ZipArchiveMode.Create, true))
+        {
+            void Entry(string name, string xml)
+            {
+                var entry = archive.CreateEntry(name, System.IO.Compression.CompressionLevel.NoCompression);
+                using var writer = new StreamWriter(entry.Open(), new UTF8Encoding(false));
+                writer.Write(xml);
+            }
+
+            Entry("xl/workbook.xml", "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"Data\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>");
+            Entry("xl/_rels/workbook.xml.rels", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/data.xml\"/></Relationships>");
+            Entry("xl/worksheets/data.xml", "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData><row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>code</t></is></c></row><row r=\"2\"><c r=\"A2\" t=\"inlineStr\"><is><t>x</t></is></c></row></sheetData></worksheet>");
+            var remaining = targetBytes - (int)memory.Length - 128;
+            if (remaining < 0) { throw new InvalidOperationException("Invalid XLSX fixture size."); }
+            var padding = archive.CreateEntry("xl/extra/padding.bin", System.IO.Compression.CompressionLevel.NoCompression);
+            using var stream = padding.Open();
+            var buffer = new byte[65536];
+            new Random(15).NextBytes(buffer);
+            for (var offset = 0; offset < remaining; offset += buffer.Length)
+            {
+                stream.Write(buffer, 0, Math.Min(buffer.Length, remaining - offset));
+            }
+        }
+
+        return memory.ToArray();
+    }
+
+    private sealed record PreparedFixture(string Format, string FileName, byte[] Bytes);
+    private sealed record PreparedSource(Guid SourceId, Guid VersionId);
+    private sealed record PreparedResponse(string Token, DateTimeOffset ExpiresAt);
 
     private static async Task<RunResult> RunOnceAsync(ApiSession session, RssSampler sampler, Guid sourceId,
         byte[] bytes, int run, int rows)
@@ -477,6 +691,7 @@ public static class Program
         public int Runs { get; private init; } = 10;
         public int Rows { get; private init; } = 1000;
         public bool SkipBig { get; private init; }
+        public bool PreparedOnly { get; private init; }
         public string? ApiDll { get; private init; }
         public string? WorkerDll { get; private init; }
 
@@ -488,8 +703,9 @@ public static class Program
                 options = arguments[index] switch
                 {
                     "--runs" => options with { Runs = int.Parse(arguments[++index], CultureInfo.InvariantCulture) },
-                    "--rows" => ParseRows(arguments[++index]),
+                    "--rows" => ParseRows(options, arguments[++index]),
                     "--skip-big" => options with { SkipBig = true },
+                    "--prepare" => options with { PreparedOnly = true, Runs = options.Runs == 10 ? 3 : options.Runs },
                     "--api-dll" => options with { ApiDll = arguments[++index] },
                     "--worker-dll" => options with { WorkerDll = arguments[++index] },
                     _ => throw new ArgumentException($"Unknown argument {arguments[index]}."),
@@ -499,11 +715,11 @@ public static class Program
             return options;
         }
 
-        private static Options ParseRows(string value)
+        private static Options ParseRows(Options options, string value)
         {
             var rows = int.Parse(value, CultureInfo.InvariantCulture);
             if (rows < 10 || rows % 10 != 0) { throw new ArgumentException("--rows must be a positive multiple of 10."); }
-            return new Options { Rows = rows };
+            return options with { Rows = rows };
         }
     }
 
@@ -629,6 +845,70 @@ public static class Program
             if (!response.IsSuccessStatusCode) { throw new InvalidOperationException("Create source failed: " + await response.Content.ReadAsStringAsync()); }
             var source = await response.Content.ReadFromJsonAsync<JsonElement>();
             return source.GetProperty("id").GetGuid();
+        }
+
+        public async Task<PreparedSource> CreatePreparedSourceAsync()
+        {
+            var definition = new
+            {
+                definitionFormatVersion = 1,
+                dataType = "Tabular",
+                keyFields = new[] { "code" },
+                fields = new[] { new { name = "code", type = "string", required = true, maxLength = 128 } }
+            };
+            using (var response = await PostAuthenticatedAsync("/api/v1/rule-sets", new { name = "Prepared benchmark", definition }))
+            {
+                if (!response.IsSuccessStatusCode) { throw new InvalidOperationException("Create rules failed: " + await response.Content.ReadAsStringAsync()); }
+                var version = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+                using var sourceResponse = await PostAuthenticatedAsync("/api/v1/rule-sources",
+                    new { name = "Prepared benchmark", ruleSetVersionId = version, allowZipCsv = true });
+                if (!sourceResponse.IsSuccessStatusCode) { throw new InvalidOperationException("Create prepared source failed: " + await sourceResponse.Content.ReadAsStringAsync()); }
+                var source = (await sourceResponse.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+                return new PreparedSource(source, version);
+            }
+        }
+
+        public async Task<PreparedResponse> PrepareAsync(Guid sourceId, byte[] bytes, string fileName, string idempotencyKey)
+        {
+            using var content = new MultipartFormDataContent
+            {
+                { new ByteArrayContent(bytes), "file", fileName }
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                $"/api/v1/data-sources/{sourceId}/file-uploads/prepare")
+            { Content = content };
+            request.Headers.Add("Idempotency-Key", idempotencyKey);
+            request.Headers.Add("X-CSRF-TOKEN", _csrf);
+            using var response = await _client.SendAsync(request);
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                throw new InvalidOperationException($"Prepare failed: {(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+            }
+
+            var prepared = await response.Content.ReadFromJsonAsync<JsonElement>();
+            return new PreparedResponse(prepared.GetProperty("uploadToken").GetString()!,
+                prepared.GetProperty("expiresAt").GetDateTimeOffset());
+        }
+
+        public async Task<Guid> CommitPreparedAsync(Guid sourceId, Guid versionId, string token, string idempotencyKey)
+        {
+            var body = new
+            {
+                uploadToken = token,
+                parts = new[] { new { partIndex = 0, enabled = true, ruleSetVersionId = versionId } }
+            };
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                $"/api/v1/data-sources/{sourceId}/file-uploads/commit")
+            { Content = JsonContent.Create(body) };
+            request.Headers.Add("Idempotency-Key", idempotencyKey);
+            request.Headers.Add("X-CSRF-TOKEN", _csrf);
+            using var response = await _client.SendAsync(request);
+            if (response.StatusCode != HttpStatusCode.Accepted)
+            {
+                throw new InvalidOperationException($"Commit failed: {(int)response.StatusCode} {await response.Content.ReadAsStringAsync()}");
+            }
+
+            return (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("jobId").GetGuid();
         }
 
         public async Task<Guid> UploadAsync(Guid sourceId, byte[] bytes, string idempotencyKey)

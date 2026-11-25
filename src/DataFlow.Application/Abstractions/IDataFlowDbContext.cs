@@ -9,5 +9,6 @@ public interface IDataFlowDbContext
     DbSet<ImportJob> ImportJobs { get; }
     DbSet<ImportPart> ImportParts { get; }
     DbSet<ImportRow> ImportRows { get; }
+    DbSet<PreparedUpload> PreparedUploads { get; }
     Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
 }

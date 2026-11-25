@@ -178,6 +178,44 @@ internal sealed class ProcessedMessageConfiguration : IEntityTypeConfiguration<P
     }
 }
 
+internal sealed class PreparedUploadConfiguration : IEntityTypeConfiguration<PreparedUpload>
+{
+    public void Configure(EntityTypeBuilder<PreparedUpload> builder)
+    {
+        builder.ToTable("prepared_uploads", table =>
+        {
+            table.HasCheckConstraint("ck_prepared_uploads_status", "status BETWEEN 1 AND 5");
+            table.HasCheckConstraint("ck_prepared_uploads_content", "content_length > 0 AND expires_at > created_at");
+            table.HasCheckConstraint("ck_prepared_uploads_lifecycle",
+                "(status = 3 AND consumed_at IS NOT NULL AND job_id IS NOT NULL) OR (status <> 3 AND consumed_at IS NULL AND job_id IS NULL)");
+            table.HasCheckConstraint("ck_prepared_uploads_tombstone",
+                "status <> 4 OR (storage_key IS NULL AND manifest_json IS NULL AND replay_response_ciphertext IS NULL)");
+        });
+        builder.HasKey(upload => upload.Id);
+        builder.Property(upload => upload.Id).ValueGeneratedNever();
+        builder.Property(upload => upload.IdempotencyKey).HasMaxLength(128).UseCollation("C").IsRequired();
+        builder.Property(upload => upload.RequestFingerprint).HasMaxLength(64).UseCollation("C").IsRequired();
+        builder.Property(upload => upload.StorageKey).HasMaxLength(1024);
+        builder.Property(upload => upload.OriginalFileName).HasMaxLength(255).IsRequired();
+        builder.Property(upload => upload.FileSha256).HasMaxLength(64).UseCollation("C").IsRequired();
+        builder.Property(upload => upload.StorageChecksumMetadata).HasMaxLength(64).IsRequired();
+        builder.Property(upload => upload.TokenHash).HasMaxLength(64).UseCollation("C").IsRequired();
+        builder.Property(upload => upload.ReplayKeyId).HasMaxLength(100).IsRequired();
+        builder.Property(upload => upload.ManifestJson).HasColumnType("jsonb");
+        builder.HasIndex(upload => new { upload.OwnerUserId, upload.DataSourceId, upload.IdempotencyKey }).IsUnique()
+            .HasDatabaseName("ux_prepared_uploads_owner_source_idempotency_key");
+        builder.HasIndex(upload => upload.StorageKey).HasFilter("storage_key IS NOT NULL")
+            .HasDatabaseName("ix_prepared_uploads_storage_key");
+        builder.HasIndex(upload => new { upload.Status, upload.ExpiresAt })
+            .HasDatabaseName("ix_prepared_uploads_status_expires_at");
+        builder.HasIndex(upload => new { upload.OwnerUserId, upload.DataSourceId, upload.TokenHash })
+            .HasDatabaseName("ix_prepared_uploads_owner_source_token_hash");
+        builder.HasOne<DataSource>().WithMany().HasForeignKey(upload => upload.DataSourceId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ApplicationUser>().WithMany().HasForeignKey(upload => upload.OwnerUserId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ImportJob>().WithMany().HasForeignKey(upload => upload.JobId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
 internal sealed class UploadRequestConfiguration : IEntityTypeConfiguration<UploadRequest>
 {
     public void Configure(EntityTypeBuilder<UploadRequest> builder)

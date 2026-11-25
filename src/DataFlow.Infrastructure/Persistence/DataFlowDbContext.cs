@@ -18,6 +18,7 @@ public sealed class DataFlowDbContext(DbContextOptions<DataFlowDbContext> option
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<ProcessedMessage> ProcessedMessages => Set<ProcessedMessage>();
     public DbSet<UploadRequest> UploadRequests => Set<UploadRequest>();
+    public DbSet<PreparedUpload> PreparedUploads => Set<PreparedUpload>();
     public DbSet<RuleDocument> RuleDocuments => Set<RuleDocument>();
     public DbSet<RuleSet> RuleSets => Set<RuleSet>();
     public DbSet<RuleSetVersion> RuleSetVersions => Set<RuleSetVersion>();

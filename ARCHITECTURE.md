@@ -45,6 +45,18 @@ flowchart LR
    `CompletedWithErrors`), inbox и итоговое outbox-сообщение; после commit — ack.
    `totalRows` остаётся `null` до EOF.
 
+## Двухфазный Prepare / Commit
+
+Для multi-part конфигурации API сначала сохраняет исходный объект и immutable
+manifest (`PartIndex`, locators, raw headers и bounded preview), затем клиент явно
+назначает правила частям и подтверждает их. `PreparedUpload` хранит token hash,
+AES-256-GCM replay response и TTL; plaintext token отсутствует. Commit проверяет
+HEAD + ContentLength + SHA-256 metadata (доступны native checksum и strict full
+streaming), заголовки из manifest без GET и в одной транзакции создаёт один Job,
+все Part, UploadRequest и outbox. Повторы используют независимые idempotency v3
+keys без legacy alias reuse. Источник истины Worker при последующих этапах —
+persisted Part/locator, а не перестроенный manifest. Подробности — ADR-003…005.
+
 ## Результаты и статусы
 
 - Статусы задания: `Queued → Processing → Completed | CompletedWithErrors`,

@@ -77,6 +77,81 @@ public sealed class StorageMaintenanceStage11Tests(DataSourcesApiFixture postgre
         async Task<List<string>> List() => (await s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = bucket })).S3Objects.Select(o => o.Key).ToList();
     }
 
+    [Fact]
+    public async Task PreparedExpiry_IsRecoverableAndConsumedObjectsFollowJobRetention()
+    {
+        using var s3 = new AmazonS3Client(new BasicAWSCredentials("dataflow_test", "dataflow_test_password"),
+            new AmazonS3Config { ServiceURL = minio.Endpoint, ForcePathStyle = true, AuthenticationRegion = "us-east-1" });
+        var bucket = "maintenance-" + Guid.NewGuid().ToString("N");
+        await s3.PutBucketAsync(new PutBucketRequest { BucketName = bucket });
+        await using var db = postgres.CreateContext();
+        var now = DateTimeOffset.UtcNow;
+        var owner = Guid.NewGuid();
+        db.Users.Add(new ApplicationUser
+        {
+            Id = owner,
+            UserName = "cleanup@example.test",
+            NormalizedUserName = "CLEANUP@EXAMPLE.TEST",
+            Email = "cleanup@example.test",
+            NormalizedEmail = "CLEANUP@EXAMPLE.TEST",
+            SecurityStamp = Guid.NewGuid().ToString()
+        });
+        var source = DataSource.Create("Prepared cleanup", DataSourceDataType.Customer, AcceptedFileFormat.Csv,
+            new DataSourceSchema(1, ["externalId"], [new("externalId", "string", true)]), now);
+        source.AssignOwner(owner);
+        db.DataSources.Add(source);
+        await db.SaveChangesAsync();
+        var expired = Prepared("expired", now.AddDays(-3), now.AddDays(-2));
+        var missing = Prepared("missing", now.AddDays(-3), now.AddDays(-2));
+        var active = Prepared("active", now, now.AddDays(10));
+        var interrupted = Prepared("interrupted", now.AddDays(-3), now.AddDays(-2));
+        interrupted.BeginExpiryCleanup();
+        var consumedJob = ImportJob.Create(source.Id, "consumed.csv", Key(), new string('a', 64), source.SchemaJson, 1, now);
+        consumedJob.Fail("bad_file", "test", false, now);
+        var consumed = Prepared("consumed", now.AddDays(-3), now.AddHours(1));
+        consumed.Consume(consumedJob.Id, now);
+        db.PreparedUploads.AddRange(expired, missing, active, interrupted, consumed);
+        db.ImportJobs.Add(consumedJob);
+        await db.SaveChangesAsync();
+        var expiredKey = expired.StorageKey!;
+        foreach (var prepared in new[] { expired, active, interrupted, consumed })
+        {
+            await s3.PutObjectAsync(new PutObjectRequest { BucketName = bucket, Key = prepared.StorageKey, ContentBody = "synthetic" });
+        }
+
+        var services = new ServiceCollection();
+        services.AddScoped(_ => postgres.CreateContext());
+        services.AddSingleton<IAmazonS3>(s3);
+        using var provider = services.BuildServiceProvider();
+        var options = new StorageOptions { Bucket = bucket, CompletedFileRetentionDays = 2, CleanupBatchSize = 10 };
+        var cleaner = new StorageMaintenanceService(provider.GetRequiredService<IServiceScopeFactory>(), Options.Create(options),
+            NullLogger<StorageMaintenanceService>.Instance, new FixedClock(now.AddDays(3)));
+        await cleaner.CleanupPreparedUploadsAsync(default);
+        db.ChangeTracker.Clear();
+        foreach (var id in new[] { expired.Id, missing.Id, interrupted.Id })
+        {
+            var tombstone = await db.PreparedUploads.SingleAsync(x => x.Id == id);
+            Assert.Equal(PreparedUploadStatus.Expired, tombstone.Status);
+            Assert.Null(tombstone.StorageKey);
+            Assert.Null(tombstone.ManifestJson);
+            Assert.Null(tombstone.ReplayResponseCiphertext);
+        }
+
+        Assert.Null((await s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = bucket })).S3Objects
+            .SingleOrDefault(x => x.Key == expiredKey));
+        Assert.Equal(PreparedUploadStatus.Ready, (await db.PreparedUploads.SingleAsync(x => x.Id == active.Id)).Status);
+        Assert.Equal(PreparedUploadStatus.Consumed, (await db.PreparedUploads.SingleAsync(x => x.Id == consumed.Id)).Status);
+        await cleaner.CleanupObjectsAsync(default);
+        var remaining = (await s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = bucket })).S3Objects.Select(x => x.Key).ToArray();
+        Assert.Contains(active.StorageKey, remaining);
+        Assert.DoesNotContain(consumedJob.StorageKey, remaining);
+
+        PreparedUpload Prepared(string suffix, DateTimeOffset created, DateTimeOffset expires) => PreparedUpload.CreateReady(owner,
+            source.Id, suffix, new string('a', 64), Key(), suffix + ".csv", new string('b', 64), AcceptedFileFormat.Csv,
+            10, new string('c', 64), [1, 2, 3], "v1", "{}", created, expires);
+        string Key() => $"sources/{source.Id:N}/2026/11/25/{Guid.NewGuid():N}";
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;

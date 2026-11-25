@@ -5,6 +5,7 @@ using DataFlow.Application.Dashboard;
 using DataFlow.Application.DataSources;
 using DataFlow.Application.Dispatching;
 using DataFlow.Application.Jobs;
+using DataFlow.Application.Uploads;
 using DataFlow.Domain.Enums;
 using DataFlow.Domain.Exceptions;
 using DataFlow.Infrastructure.Configuration;
@@ -33,6 +34,20 @@ public static class FileEndpoints
             }))
             .WithTags("Files");
         secured.MapPost("/api/v1/data-sources/{id:guid}/files", UploadAsync)
+            .WithTags("Files").Produces<JobAcceptedDto>(202).ProducesProblem(400).ProducesProblem(404).ProducesProblem(409);
+        secured.MapPost("/api/v1/data-sources/{id:guid}/file-uploads/prepare", PrepareAsync)
+            .WithTags("Files").Produces<PreparedUploadResponse>().ProducesProblem(400).ProducesProblem(404).ProducesProblem(409);
+        secured.MapPost("/api/v1/data-sources/{id:guid}/file-uploads/inspect",
+            async (Guid id, InspectPreparedPartRequest request, IDispatcher dispatcher, CancellationToken ct) =>
+                Results.Ok(await dispatcher.DispatchAsync<InspectPreparedPartCommand, PreparedPartDto>(new(id, request), ct)))
+            .WithTags("Files").Produces<PreparedPartDto>().ProducesProblem(400).ProducesProblem(404).ProducesProblem(409);
+        secured.MapPost("/api/v1/data-sources/{id:guid}/file-uploads/commit",
+            async (Guid id, CommitPreparedUploadRequest request, HttpContext context, IDispatcher dispatcher, CancellationToken ct) =>
+            {
+                var key = RequiredIdempotencyKey(context);
+                var result = await dispatcher.DispatchAsync<CommitPreparedUploadCommand, JobAcceptedDto>(new(id, key, request), ct);
+                return Results.Accepted($"/api/v1/jobs/{result.JobId}", result);
+            })
             .WithTags("Files").Produces<JobAcceptedDto>(202).ProducesProblem(400).ProducesProblem(404).ProducesProblem(409);
         secured.MapGet("/api/v1/data-sources/{id:guid}/jobs", async (Guid id, IDispatcher dispatcher,
             CancellationToken ct, int page = 1, int pageSize = 50, string? status = null) =>
@@ -68,15 +83,153 @@ public static class FileEndpoints
         await JobErrorReportWriter.WriteErrorsCsvAsync(database, id, context.Response.Body, ct);
     }
 
+    private static async Task<IResult> PrepareAsync(Guid id, HttpContext context, IDispatcher dispatcher,
+        IOptions<StorageOptions> options, IOptions<ImportProcessingOptions> importOptions)
+    {
+        var ct = context.RequestAborted;
+        var key = RequiredIdempotencyKey(context);
+        var source = await dispatcher.DispatchAsync<GetDataSourceQuery, DataSourceDto>(new(id), ct);
+        if (!source.IsActive)
+        {
+            throw Error("source_inactive");
+        }
+
+        var sizeFeature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (sizeFeature is { IsReadOnly: false })
+        {
+            sizeFeature.MaxRequestBodySize = null;
+        }
+
+        if (!MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var media)
+            || !media.MediaType.Equals("multipart/form-data", StringComparison.OrdinalIgnoreCase))
+        {
+            throw Error("invalid_multipart");
+        }
+
+        var boundary = HeaderUtilities.RemoveQuotes(media.Boundary).Value;
+        if (string.IsNullOrEmpty(boundary) || boundary.Length > 128)
+        {
+            throw Error("invalid_multipart");
+        }
+
+        var settings = options.Value;
+        var import = importOptions.Value;
+        Directory.CreateDirectory(settings.TempDirectory);
+        var temp = Path.Combine(settings.TempDirectory, Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32)));
+        var receiving = true;
+        using var tempLease = new FileStream(temp + ".lock", FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+        try
+        {
+            var reader = new MultipartReader(boundary, context.Request.Body);
+            string? fileName = null;
+            string? hash = null;
+            long contentLength = 0;
+            var format = AcceptedFileFormat.None;
+            MultipartSection? section;
+            while ((section = await reader.ReadNextSectionAsync(ct)) is not null)
+            {
+                if (!ContentDispositionHeaderValue.TryParse(section.ContentDisposition, out var disposition)
+                    || !disposition.DispositionType.Equals("form-data", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw Error("invalid_multipart");
+                }
+
+                if (fileName is not null || (!disposition.FileName.HasValue && !disposition.FileNameStar.HasValue))
+                {
+                    throw Error("unexpected_form_field");
+                }
+
+                fileName = HeaderUtilities.RemoveQuotes(disposition.FileNameStar.HasValue ? disposition.FileNameStar : disposition.FileName).Value;
+                fileName = fileName?.Replace('\\', '/').Split('/').Last().Trim();
+                if (string.IsNullOrWhiteSpace(fileName) || fileName.Length > 255 || fileName.Any(char.IsControl))
+                {
+                    throw Error("invalid_file_name");
+                }
+
+                format = Path.GetExtension(fileName).ToLowerInvariant() switch
+                {
+                    ".csv" => AcceptedFileFormat.Csv,
+                    ".xlsx" => AcceptedFileFormat.Xlsx,
+                    ".zip" => AcceptedFileFormat.Zip,
+                    _ => AcceptedFileFormat.None
+                };
+                if (format == AcceptedFileFormat.None || !source.AcceptedFormats.Contains(format.ToString(), StringComparer.Ordinal))
+                {
+                    throw Error("file_format_not_allowed");
+                }
+
+                var maxFileBytes = format switch
+                {
+                    AcceptedFileFormat.Xlsx => Math.Min(settings.MaxFileBytes, import.MaxFileBytes),
+                    AcceptedFileFormat.Zip => Math.Min(settings.MaxFileBytes, import.Zip.MaxArchiveBytes),
+                    _ => settings.MaxFileBytes
+                };
+                await using var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true);
+                using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var buffer = new byte[65536];
+                var prefix = new byte[4096];
+                var prefixLength = 0;
+                int read;
+                while ((read = await section.Body.ReadAsync(buffer.AsMemory(0,
+                           (int)Math.Min(buffer.Length, maxFileBytes - contentLength + 1)), ct)) > 0)
+                {
+                    contentLength += read;
+                    if (contentLength > maxFileBytes)
+                    {
+                        throw Error("file_too_large");
+                    }
+
+                    var copy = Math.Min(read, prefix.Length - prefixLength);
+                    buffer.AsSpan(0, copy).CopyTo(prefix.AsSpan(prefixLength));
+                    prefixLength += copy;
+                    sha.AppendData(buffer, 0, read);
+                    await output.WriteAsync(buffer.AsMemory(0, read), ct);
+                }
+
+                if (contentLength == 0)
+                {
+                    throw Error("empty_file");
+                }
+
+                if (!ValidSignature(format, prefix.AsSpan(0, prefixLength)))
+                {
+                    throw Error("invalid_file_format");
+                }
+
+                hash = Convert.ToHexStringLower(sha.GetHashAndReset());
+            }
+
+            if (fileName is null || hash is null)
+            {
+                throw Error("empty_file");
+            }
+
+            ct.ThrowIfCancellationRequested();
+            receiving = false;
+            var result = await dispatcher.DispatchAsync<PrepareUploadCommand, PreparedUploadResponse>(
+                new(id, key, temp, fileName, hash, format, contentLength), ct);
+            return Results.Ok(result);
+        }
+        catch (InvalidDataException) when (receiving) { throw Error("invalid_multipart"); }
+        catch (IOException) when (receiving && !ct.IsCancellationRequested) { throw Error("invalid_multipart"); }
+        finally
+        {
+            if (File.Exists(temp))
+            {
+                File.Delete(temp);
+            }
+
+            tempLease.Dispose();
+            File.Delete(temp + ".lock");
+        }
+    }
+
     private static async Task<IResult> UploadAsync(Guid id, HttpContext context, IDispatcher dispatcher,
         IOptions<StorageOptions> options, IOptions<ImportProcessingOptions> importOptions)
     {
         var ct = context.RequestAborted;
         var header = context.Request.Headers["Idempotency-Key"];
-        if (header.Count != 1 || string.IsNullOrWhiteSpace(header[0]) || header[0]!.Length > 128)
-        {
-            throw Error("invalid_idempotency_key");
-        }
+        _ = RequiredIdempotencyKey(context);
 
         var source = await dispatcher.DispatchAsync<GetDataSourceQuery, DataSourceDto>(new(id), ct);
         var settings = options.Value;
@@ -210,6 +363,17 @@ public static class FileEndpoints
             tempLease.Dispose();
             File.Delete(temp + ".lock");
         }
+    }
+
+    private static string RequiredIdempotencyKey(HttpContext context)
+    {
+        var header = context.Request.Headers["Idempotency-Key"];
+        if (header.Count != 1 || string.IsNullOrWhiteSpace(header[0]) || header[0]!.Length > 128)
+        {
+            throw Error("invalid_idempotency_key");
+        }
+
+        return header[0]!;
     }
 
     private static bool ValidSignature(AcceptedFileFormat format, ReadOnlySpan<byte> bytes)

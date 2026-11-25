@@ -24,7 +24,8 @@ public sealed class ImportJob
         string schemaJson,
         int schemaVersion,
         DateTimeOffset nowUtc,
-        DataSourceDataType dataType)
+        DataSourceDataType dataType,
+        bool createSinglePart = true)
     {
         Id = id;
         DataSourceId = dataSourceId;
@@ -37,7 +38,10 @@ public sealed class ImportJob
         RunVersion = 1;
         CreatedAt = nowUtc;
         UpdatedAt = nowUtc;
-        _parts.Add(ImportPart.CreateSingle(this, nowUtc, dataType));
+        if (createSinglePart)
+        {
+            _parts.Add(ImportPart.CreateSingle(this, nowUtc, dataType));
+        }
     }
 
     public IReadOnlyList<ImportPart> Parts => _parts.AsReadOnly();
@@ -155,6 +159,74 @@ public sealed class ImportJob
             schemaVersion,
             nowUtc.ToUniversalTime(),
             dataType);
+    }
+
+    public static ImportJob CreatePrepared(
+        Guid dataSourceId,
+        string originalFileName,
+        string storageKey,
+        string fileSha256,
+        string schemaJson,
+        int schemaVersion,
+        DateTimeOffset nowUtc,
+        string executionFingerprint)
+    {
+        ValidatePreparedArguments(dataSourceId, originalFileName, storageKey, fileSha256, schemaJson, schemaVersion,
+            executionFingerprint);
+        return new ImportJob(Guid.NewGuid(), dataSourceId, originalFileName.Trim(), storageKey, fileSha256.ToLowerInvariant(),
+            schemaJson, schemaVersion, nowUtc.ToUniversalTime(), DataSourceDataType.Tabular, createSinglePart: false)
+        {
+            ExecutionFingerprint = executionFingerprint
+        };
+    }
+
+    public void AddPreparedPart(int partIndex, ImportPartType partType, string sourceName, string? sheetName,
+        int? sheetIndex, string sourceLocator, bool enabled, string? deduplicationScope, DateTimeOffset nowUtc,
+        Guid? ruleSetVersionId = null, Guid? ruleDocumentId = null, string? ruleSnapshotHash = null,
+        string? ruleSetName = null, int? ruleVersionNumber = null)
+    {
+        if (_parts.Any(part => part.PartIndex == partIndex) || partIndex != _parts.Count)
+        {
+            throw new DomainException("invalid_manifest", "Prepared parts must retain their exact server order.");
+        }
+
+        var part = ImportPart.CreatePrepared(this, partIndex, partType, sourceName, sheetName, sheetIndex, sourceLocator,
+            enabled, deduplicationScope, nowUtc);
+        if (enabled)
+        {
+            if (ruleSetVersionId is null || ruleDocumentId is null || ruleSnapshotHash is null ||
+                ruleSetName is null || ruleVersionNumber is null)
+            {
+                throw new DomainException("invalid_part_rules", "Every enabled prepared part requires pinned rules.");
+            }
+
+            part.PinPreparedRules(ruleSetVersionId.Value, ruleDocumentId.Value, ruleSnapshotHash, ruleSetName,
+                ruleVersionNumber.Value);
+        }
+        else if (ruleSetVersionId is not null || ruleDocumentId is not null || ruleSnapshotHash is not null ||
+                 ruleSetName is not null || ruleVersionNumber is not null)
+        {
+            throw new DomainException("invalid_manifest", "Skipped parts cannot contain rule bindings.");
+        }
+
+        _parts.Add(part);
+    }
+
+    public void CompletePreparedConfiguration()
+    {
+        if (_parts.Count == 0 || _parts.All(part => part.Status == ImportPartStatus.Skipped))
+        {
+            throw new DomainException("no_enabled_parts", "At least one prepared part must be enabled.");
+        }
+
+        if (_parts.Count == 1)
+        {
+            var part = _parts[0];
+            RuleSetVersionId = part.RuleSetVersionId;
+            RuleDocumentId = part.RuleDocumentId;
+            RuleSetNameAtSubmission = part.RuleSetNameAtSubmission;
+            RuleVersionNumberAtSubmission = part.RuleVersionNumberAtSubmission;
+        }
     }
 
     public void AcquireLease(string owner, DateTimeOffset nowUtc, int leaseSeconds)
@@ -447,6 +519,17 @@ public sealed class ImportJob
             (RuleVersionNumberAtSubmission is not null && RuleVersionNumberAtSubmission != number))
         {
             throw new DomainException("rule_reference_conflict", "Existing job rule references conflict with the migrated version.");
+        }
+    }
+
+    private static void ValidatePreparedArguments(Guid dataSourceId, string originalFileName, string storageKey,
+        string fileSha256, string schemaJson, int schemaVersion, string executionFingerprint)
+    {
+        if (dataSourceId == Guid.Empty || string.IsNullOrWhiteSpace(originalFileName) ||
+            string.IsNullOrWhiteSpace(storageKey) || string.IsNullOrWhiteSpace(schemaJson) ||
+            fileSha256.Length != 64 || schemaVersion <= 0 || executionFingerprint.Length != 64)
+        {
+            throw new DomainException("invalid_job_upload_data", "Prepared job upload data is invalid.");
         }
     }
 

@@ -54,7 +54,7 @@ public sealed class PostgreSqlStage3Tests(PostgreSqlFixture fixture) : IClassFix
         }
 
         Assert.Equal(new[] { "AspNetRoleClaims", "AspNetRoles", "AspNetUserClaims", "AspNetUserLogins", "AspNetUserRoles", "AspNetUserTokens", "AspNetUsers",
-            "customers", "data_sources", "import_jobs", "import_parts", "import_rows", "outbox_messages", "processed_messages", "rule_documents", "rule_set_versions", "rule_sets",
+            "customers", "data_sources", "import_jobs", "import_parts", "import_rows", "outbox_messages", "prepared_uploads", "processed_messages", "rule_documents", "rule_set_versions", "rule_sets",
             "rule_version_grants", "rule_version_publications", "upload_requests", "user_rule_library_entries" }, tables);
     }
 

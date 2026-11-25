@@ -56,7 +56,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
             var sheetEntry = FindEntry(archive, sheetPath)
                 ?? throw new ImportFileException("invalid_xlsx_archive", "The first worksheet entry was not found.", 0);
             var dateStyles = await ReadDateStylesAsync(archive, budget, cancellationToken);
-            var sharedStrings = await ReadSharedStringsAsync(archive, budget, limits.MaxCellLength, cancellationToken);
+            var sharedStrings = await ReadSharedStringsAsync(archive, budget, limits.MaxCellLength, cancellationToken, limits.Xlsx);
 
             await using var rawSheetStream = sheetEntry.Open();
             await using var boundedSheetStream = new BoundedEntryStream(rawSheetStream, budget);
@@ -101,7 +101,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
                     }
 
                     headers = BuildHeaderCells(parsedCells);
-                    ValidateHeader(headers, schema);
+                    TabularHeaders.Validate(headers, schema, "XLSX");
                     fieldLogicalNames = schema.Fields.ToDictionary(f => f.Name, f => f.LogicalName, StringComparer.Ordinal);
                     continue;
                 }
@@ -184,7 +184,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         return memory;
     }
 
-    private static void ValidateZipLimits(ZipArchive archive, ImportProcessingOptions limits)
+    internal static void ValidateZipLimits(ZipArchive archive, ImportProcessingOptions limits)
     {
         if (archive.Entries.Count == 0)
         {
@@ -300,7 +300,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         return ("xl/worksheets/sheet1.xml", date1904);
     }
 
-    private static async Task<HashSet<int>> ReadDateStylesAsync(
+    internal static async Task<HashSet<int>> ReadDateStylesAsync(
         ZipArchive archive, UncompressedBudget budget, CancellationToken cancellationToken)
     {
         var stylesEntry = FindEntry(archive, "xl/styles.xml");
@@ -416,8 +416,9 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         return cleaned.Contains('y') && (cleaned.Contains('m') || cleaned.Contains('d'));
     }
 
-    private static async Task<List<string>> ReadSharedStringsAsync(
-        ZipArchive archive, UncompressedBudget budget, int maxCellLength, CancellationToken cancellationToken)
+    internal static async Task<List<string>> ReadSharedStringsAsync(
+        ZipArchive archive, UncompressedBudget budget, int maxCellLength, CancellationToken cancellationToken,
+        XlsxContainerOptions? sharedLimits = null)
     {
         var entry = FindEntry(archive, "xl/sharedStrings.xml");
         if (entry is null)
@@ -426,6 +427,8 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         }
 
         var strings = new List<string>();
+        var totalChars = 0;
+        sharedLimits ??= new XlsxContainerOptions();
         await using var rawStream = entry.Open();
         await using var stream = new BoundedEntryStream(rawStream, budget);
         using var reader = CreateXmlReader(stream);
@@ -448,7 +451,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
                             current.Clear();
                             if (reader.IsEmptyElement)
                             {
-                                strings.Add(string.Empty);
+                                AddSharedString(strings, string.Empty, sharedLimits, ref totalChars);
                             }
                             else
                             {
@@ -473,11 +476,9 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
                     case XmlNodeType.Whitespace:
                     case XmlNodeType.SignificantWhitespace:
                     case XmlNodeType.CDATA:
-                        if (inSi && inT && !inPhonetic && current.Length <= maxCellLength)
+                        if (inSi && inT && !inPhonetic)
                         {
-                            var remaining = maxCellLength + 1 - current.Length;
-                            var value = reader.Value;
-                            current.Append(value.Length <= remaining ? value : value.AsSpan(0, remaining));
+                            current.Append(reader.Value);
                         }
 
                         break;
@@ -493,7 +494,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
                         }
                         else if (reader.LocalName == "si" && inSi)
                         {
-                            strings.Add(current.ToString());
+                            AddSharedString(strings, current.ToString(), sharedLimits, ref totalChars);
                             inSi = false;
                         }
 
@@ -513,7 +514,18 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         return strings;
     }
 
-    private static async Task<bool> MoveToNextRowAsync(XmlReader reader, int rowNumber, CancellationToken cancellationToken)
+    private static void AddSharedString(List<string> strings, string value, XlsxContainerOptions limits, ref int totalChars)
+    {
+        if (strings.Count >= limits.MaxSharedStrings || totalChars > limits.MaxSharedStringChars - value.Length)
+        {
+            throw new ImportFileException("shared_strings_limit_exceeded", "The XLSX shared strings exceed their resource budget.", 0);
+        }
+
+        strings.Add(value);
+        totalChars += value.Length;
+    }
+
+    internal static async Task<bool> MoveToNextRowAsync(XmlReader reader, int rowNumber, CancellationToken cancellationToken)
     {
         try
         {
@@ -542,7 +554,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         }
     }
 
-    private static async Task<ParsedSheetRow> ReadRowCellsAsync(
+    internal static async Task<ParsedSheetRow> ReadRowCellsAsync(
         XmlReader reader,
         int rowNumber,
         ImportProcessingOptions limits,
@@ -953,7 +965,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         return dateTime.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
     }
 
-    private static bool IsRowEmpty(ParsedSheetRow row, int headerCount)
+    internal static bool IsRowEmpty(ParsedSheetRow row, int headerCount)
     {
         if (row.HasFormulaOrUnsupported)
         {
@@ -973,7 +985,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         return row.ExplicitEmptyCells < headerCount;
     }
 
-    private static string[] BuildHeaderCells(ParsedSheetRow headerRow)
+    internal static string[] BuildHeaderCells(ParsedSheetRow headerRow)
     {
         var headers = new string[headerRow.MaxColumn];
         Array.Fill(headers, string.Empty);
@@ -1067,7 +1079,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         return column;
     }
 
-    private static ZipArchiveEntry? FindEntry(ZipArchive archive, string normalizedPath)
+    internal static ZipArchiveEntry? FindEntry(ZipArchive archive, string normalizedPath)
     {
         foreach (var entry in archive.Entries)
         {
@@ -1081,7 +1093,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         return null;
     }
 
-    private static string NormalizeZipPath(string target)
+    internal static string NormalizeZipPath(string target)
     {
         var cleaned = target.Replace('\\', '/').Trim();
         if (cleaned.StartsWith('/'))
@@ -1118,7 +1130,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         return string.Join('/', parts);
     }
 
-    private static XmlReader CreateXmlReader(Stream stream) =>
+    internal static XmlReader CreateXmlReader(Stream stream) =>
         XmlReader.Create(stream, new XmlReaderSettings
         {
             Async = true,
@@ -1129,21 +1141,21 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
             IgnoreProcessingInstructions = true
         });
 
-    private sealed record ParsedSheetCell(
+    internal sealed record ParsedSheetCell(
         int ColumnIndex,
         string RawText,
         string? ErrorCode,
         string? ErrorMessage,
         bool HasExplicitEmptyValue);
 
-    private sealed record ParsedSheetRow(
+    internal sealed record ParsedSheetRow(
         IReadOnlyList<ParsedSheetCell> Cells,
         IReadOnlyDictionary<int, ParsedSheetCell> ByColumn,
         int MaxColumn,
         bool HasFormulaOrUnsupported,
         int ExplicitEmptyCells);
 
-    private sealed class UncompressedBudget(long maxBytes)
+    internal sealed class UncompressedBudget(long maxBytes)
     {
         private long _consumed;
         public int CurrentRowNumber { get; set; }
@@ -1159,7 +1171,7 @@ public sealed class XlsxRowParser(IOptions<ImportProcessingOptions> options) : I
         }
     }
 
-    private sealed class BoundedEntryStream(Stream inner, UncompressedBudget budget) : Stream
+    internal sealed class BoundedEntryStream(Stream inner, UncompressedBudget budget) : Stream
     {
         public override bool CanRead => inner.CanRead;
         public override bool CanSeek => false;

@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -44,8 +45,20 @@ public static class InfrastructureConfigurationExtensions
             .Bind(configuration.GetSection(ImportProcessingOptions.SectionName))
             .ValidateDataAnnotations()
             .Validate(options => options.HeartbeatSeconds < options.LeaseSeconds, "Heartbeat must be shorter than the lease.")
+            .Validate(options => options.MaxPreviewRawBytesPerJob >= options.MaxPreviewRawBytesPerPart,
+                "Import:MaxPreviewRawBytesPerJob must not be smaller than the per-part preview budget.")
+            .Validate(options => Enum.IsDefined(options.PreparedUploadIntegrity), "Import:PreparedUploadIntegrity is invalid.")
+            .Validate(options => ValidNestedOptions(options), "Import ZIP/XLSX nested options are invalid.")
             .ValidateOnStart();
+
+        services
+            .AddOptions<PreparedUploadEncryptionOptions>()
+            .Bind(configuration.GetSection(PreparedUploadEncryptionOptions.SectionName));
 
         return services;
     }
+
+    private static bool ValidNestedOptions(ImportProcessingOptions options) =>
+        Validator.TryValidateObject(options.Zip, new ValidationContext(options.Zip), null, true) &&
+        Validator.TryValidateObject(options.Xlsx, new ValidationContext(options.Xlsx), null, true);
 }

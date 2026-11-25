@@ -629,6 +629,139 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("DataFlow.Domain.Entities.PreparedUpload", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<long>("ContentLength")
+                        .HasColumnType("bigint")
+                        .HasColumnName("content_length");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DataSourceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("data_source_id");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("FileSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("file_sha256")
+                        .UseCollation("C");
+
+                    b.Property<int>("Format")
+                        .HasColumnType("integer")
+                        .HasColumnName("format");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("idempotency_key")
+                        .UseCollation("C");
+
+                    b.Property<Guid?>("JobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("job_id");
+
+                    b.Property<string>("ManifestJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("manifest_json");
+
+                    b.Property<string>("OriginalFileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("original_file_name");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("owner_user_id");
+
+                    b.Property<string>("ReplayKeyId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("replay_key_id");
+
+                    b.Property<byte[]>("ReplayResponseCiphertext")
+                        .HasColumnType("bytea")
+                        .HasColumnName("replay_response_ciphertext");
+
+                    b.Property<string>("RequestFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_fingerprint")
+                        .UseCollation("C");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<string>("StorageChecksumMetadata")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("storage_checksum_metadata");
+
+                    b.Property<string>("StorageKey")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)")
+                        .HasColumnName("storage_key");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("token_hash")
+                        .UseCollation("C");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DataSourceId");
+
+                    b.HasIndex("JobId");
+
+                    b.HasIndex("StorageKey")
+                        .HasDatabaseName("ix_prepared_uploads_storage_key")
+                        .HasFilter("storage_key IS NOT NULL");
+
+                    b.HasIndex("Status", "ExpiresAt")
+                        .HasDatabaseName("ix_prepared_uploads_status_expires_at");
+
+                    b.HasIndex("OwnerUserId", "DataSourceId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_prepared_uploads_owner_source_idempotency_key");
+
+                    b.HasIndex("OwnerUserId", "DataSourceId", "TokenHash")
+                        .HasDatabaseName("ix_prepared_uploads_owner_source_token_hash");
+
+                    b.ToTable("prepared_uploads", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_prepared_uploads_content", "content_length > 0 AND expires_at > created_at");
+
+                            t.HasCheckConstraint("ck_prepared_uploads_lifecycle", "(status = 3 AND consumed_at IS NOT NULL AND job_id IS NOT NULL) OR (status <> 3 AND consumed_at IS NULL AND job_id IS NULL)");
+
+                            t.HasCheckConstraint("ck_prepared_uploads_status", "status BETWEEN 1 AND 5");
+
+                            t.HasCheckConstraint("ck_prepared_uploads_tombstone", "status <> 4 OR (storage_key IS NULL AND manifest_json IS NULL AND replay_response_ciphertext IS NULL)");
+                        });
+                });
+
             modelBuilder.Entity("DataFlow.Domain.Entities.ProcessedMessage", b =>
                 {
                     b.Property<string>("MessageId")
@@ -1209,6 +1342,26 @@ namespace DataFlow.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_import_rows_import_part");
+                });
+
+            modelBuilder.Entity("DataFlow.Domain.Entities.PreparedUpload", b =>
+                {
+                    b.HasOne("DataFlow.Domain.Entities.DataSource", null)
+                        .WithMany()
+                        .HasForeignKey("DataSourceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("DataFlow.Domain.Entities.ImportJob", null)
+                        .WithMany()
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("DataFlow.Infrastructure.Persistence.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("DataFlow.Domain.Entities.ProcessedMessage", b =>

@@ -32,6 +32,8 @@ PUT/DELETE  /rule-library/{id}
 POST        /rule-definitions/validate
 POST        /rule-sources
 PUT         /data-sources/{id}/rule-version
+POST        /rule-sources (allowZipCsv)
+PUT         /rule-sources/{id}/zip-csv
 POST        /data-sources/{id}/files?ruleSetVersionId={id}
 GET         /jobs/{id}/rule-definition
 ```

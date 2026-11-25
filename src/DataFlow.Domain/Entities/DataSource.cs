@@ -140,6 +140,17 @@ public sealed class DataSource
         UpdatedAt = PersistenceTime.ToStoragePrecision(nowUtc);
     }
 
+    public void SetZipCsvAllowed(bool enabled, DateTimeOffset nowUtc)
+    {
+        if (DefaultRuleSetVersionId is null)
+        {
+            throw new DomainException("invalid_rule_definition", "ZIP CSV can be enabled only for a rule-backed source.");
+        }
+
+        AcceptedFormats = enabled ? AcceptedFormats | AcceptedFileFormat.Zip : AcceptedFormats & ~AcceptedFileFormat.Zip;
+        UpdatedAt = PersistenceTime.ToStoragePrecision(nowUtc);
+    }
+
     public void Activate(DateTimeOffset nowUtc)
     {
         IsActive = true;

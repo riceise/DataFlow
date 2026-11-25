@@ -13,8 +13,9 @@ namespace DataFlow.Api.Endpoints;
 
 public static class RuleSourceEndpoints
 {
-    public sealed record CreateRuleSource(string Name, Guid RuleSetVersionId);
+    public sealed record CreateRuleSource(string Name, Guid RuleSetVersionId, bool AllowZipCsv = false);
     public sealed record SelectRuleVersion(Guid RuleSetVersionId);
+    public sealed record SetZipCsv(bool Enabled);
     public static void MapRuleSourceEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/v1").RequireAuthorization().WithTags("Data sources");
@@ -33,7 +34,8 @@ public static class RuleSourceEndpoints
             }
             // Legacy storage remains until historical backfill is verified. New workers use the pinned document.
             var placeholder = new DataSourceSchema(1, ["externalId"], [new DataSourceFieldDefinition("externalId", "string", true)]);
-            var source = DataSource.Create(request.Name, Enum.Parse<DataSourceDataType>(version.DataType), AcceptedFileFormat.All,
+            var formats = AcceptedFileFormat.All | (request.AllowZipCsv ? AcceptedFileFormat.Zip : AcceptedFileFormat.None);
+            var source = DataSource.Create(request.Name, Enum.Parse<DataSourceDataType>(version.DataType), formats,
                 placeholder, DateTimeOffset.UtcNow);
             source.AssignOwner(user.UserId); source.SelectRules(version.Id, Enum.Parse<DataSourceDataType>(version.DataType));
             db.DataSources.Add(source); await db.SaveChangesAsync(ct);
@@ -51,6 +53,15 @@ public static class RuleSourceEndpoints
 
             source.SelectRules(version.Id, source.DataType); await db.SaveChangesAsync(ct);
             return Results.Ok(new { source.Id, source.DefaultRuleSetVersionId });
+        });
+        group.MapPut("/rule-sources/{id:guid}/zip-csv", async (Guid id, SetZipCsv request, DataFlowDbContext db,
+            ICurrentUser user, CancellationToken ct) =>
+        {
+            var source = await db.DataSources.SingleOrDefaultAsync(s => s.Id == id && s.OwnerUserId == user.UserId, ct)
+                ?? throw new DomainException("source_not_found", "Data source was not found.");
+            source.SetZipCsvAllowed(request.Enabled, DateTimeOffset.UtcNow);
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(new { source.Id, AllowZipCsv = source.AcceptedFormats.HasFlag(AcceptedFileFormat.Zip) });
         });
         group.MapGet("/jobs/{id:guid}/rule-definition", async (Guid id, DataFlowDbContext db, ICurrentUser user, CancellationToken ct) =>
         {
